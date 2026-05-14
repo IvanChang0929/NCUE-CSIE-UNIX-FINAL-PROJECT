@@ -8,3 +8,14 @@ sandbox/__pycache__/
 sandbox/build
 
 sandbox/sandbox_manager.c
+__pycache__/
+*.pyc
+
+venv/
+backend/venv/
+
+*.db
+*.sqlite3
+
+.vscode/
+.env
