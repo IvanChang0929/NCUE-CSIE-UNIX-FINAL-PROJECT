@@ -14,7 +14,7 @@ def run_job_with_sandbox(source_file):
 
     result = subprocess.run(
         [
-            "./sandbox",
+            "./build/sandbox",
             str(source_file)
         ],
 
