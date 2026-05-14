@@ -1,3 +1,13 @@
+# sandbox temp
+sandbox/tmp/
+
+# python cache
+sandbox/__pycache__/
+
+# executable binaries
+sandbox/build
+
+sandbox/sandbox_manager.c
 __pycache__/
 *.pyc
 
