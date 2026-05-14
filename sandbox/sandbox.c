@@ -32,6 +32,7 @@ int child_func(void *arg){
     printf("[Namespace Child] PID = %d\n", getpid());
     printf("[Namespace Child] PPID = %d\n", getppid());
 
+
     if(mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1){
         perror("mount MS_PRIVATE");
         exit(1);
@@ -78,23 +79,21 @@ int child_func(void *arg){
 
     printf("[Namespace Child] Resource limits applied\n");
 
-
     if(mkdir("/tmp/build", 0755) == -1 && errno != EEXIST){
         perror("mkdir /tmp/build");
         exit(1);
     }
-    printf("[Namespace Child] Build directory ready\n");
-
 
     printf("[Namespace Child] Start compile...\n");
-    pid_t compile_pid = fork();
 
+    pid_t compile_pid = fork();
     if(compile_pid < 0){
         perror("fork compile");
         exit(1);
     }
 
     if(compile_pid == 0){
+
         char *compile_args[] = {
             "gcc",
             source_file,
@@ -118,9 +117,9 @@ int child_func(void *arg){
     if(!WIFEXITED(compile_status) || WEXITSTATUS(compile_status) != 0){
         fprintf(stderr,
                 "[Namespace Child] Compile failed\n");
+
         exit(1);
     }
-
     printf("[Namespace Child] Compile success\n");
 
 
@@ -142,6 +141,7 @@ int child_func(void *arg){
 int main(int argc, char *argv[]){
 
     if(argc != 2){
+
         fprintf(stderr,
                 "Usage: %s <source_file>\n",
                 argv[0]);
