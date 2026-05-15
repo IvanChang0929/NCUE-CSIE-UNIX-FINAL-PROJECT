@@ -2,6 +2,7 @@ from pathlib import Path
 from database import *
 
 import subprocess
+import time
 
 
 def write_code_to_file(code, file_path):
@@ -14,7 +15,7 @@ def run_job_with_sandbox(source_file):
 
     result = subprocess.run(
         [
-            "./build/sandbox",
+            "./sandbox/build/sandbox",
             str(source_file)
         ],
 
@@ -36,7 +37,7 @@ def process_job(job):
     code = job["code"]
 
     # 建立工作資料夾
-    workdir = Path(f"./tmp/job_{job_id}")
+    workdir = Path(f"./sandbox/tmp/job_{job_id}")
 
     workdir.mkdir(parents=True, exist_ok=True)
 
@@ -72,14 +73,23 @@ def process_job(job):
 
 
 def main():
+    print("[Worker] Started. Waiting for jobs...")
 
-    job = get_pending_job()
+    try:
+        while True:
+            job = get_pending_job()
 
-    if not job:
-        print("[Worker] No pending job")
-        return
+            if not job:
+                # 沒有任務時，讓 CPU 休息 1 秒鐘，再去問資料庫
+                # 這樣既能即時處理，又不會讓 CPU 飆高
+                time.sleep(1)
+                continue
 
-    process_job(job)
+            print(f"\n[Worker] Found job {job['id']}. Processing...")
+            process_job(job)
+
+    except KeyboardInterrupt:
+        print("\n[Worker] Shutting down gracefully...")
 
 
 if __name__ == "__main__":
