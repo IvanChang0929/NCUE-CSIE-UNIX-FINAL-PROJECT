@@ -16,11 +16,17 @@ $(TARGET): $(SRC)
 	mkdir -p sandbox/build
 	$(CC) $(CFLAGS) $(SRC) -o $(TARGET)
 
-clean:
-	rm -rf sandbox/build
-	rm -rf sandbox/tmp/build
+worker: $(TARGET)
+	@echo "[System] Starting Sandbox Worker Polling Loop..."
+	python3 sandbox/worker.py
 
 run: $(TARGET)
 	./$(TARGET) sandbox/tmp/test/main.c
 
-.PHONY: all clean run
+clean:
+	@echo "[System] Cleaning up build and temporary files..."
+	rm -rf sandbox/build
+	rm -rf sandbox/tmp/build
+	rm -rf sandbox/tmp/job_*
+
+.PHONY: all clean run worker
