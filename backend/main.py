@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from database import get_connection, init_db
+from db import get_connection, init_db
 
 app = FastAPI()
 

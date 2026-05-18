@@ -1,5 +1,5 @@
 from pathlib import Path
-from database import *
+from api_client import *
 
 import subprocess
 import time
@@ -36,15 +36,11 @@ def process_job(job):
     job_id = job["id"]
     code = job["code"]
 
-    # 建立工作資料夾
     workdir = Path(f"./sandbox/tmp/job_{job_id}")
-
     workdir.mkdir(parents=True, exist_ok=True)
 
-    # source file
     source_file = workdir / "main.c"
 
-    # 寫入 AI code
     write_code_to_file(code, source_file)
 
     print(f"[Worker] Write code -> {source_file}")
@@ -52,15 +48,11 @@ def process_job(job):
     update_job_status(job_id, "running")
 
     try:
-        # 呼叫 sandbox runtime
         result = run_job_with_sandbox(source_file)
 
-        update_job_status(job_id, "finished")
-
         update_job_result(job_id, result)
-    except subprocess.TimeoutExpired:
 
-        update_job_status(job_id, "timeout")
+    except subprocess.TimeoutExpired:
 
         update_job_result(
             job_id,
