@@ -1,17 +1,10 @@
 import tkinter as tk
-import sys
-from pathlib import Path
+import requests
 
 from tkinter import ttk, messagebox
 from datetime import datetime
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-BACKEND_DIR = BASE_DIR / "backend"
-
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.append(str(BACKEND_DIR))
-
-from db import get_connection
+API_URL = "http://127.0.0.1:8000"
 
 class SandboxMockup(tk.Tk):
     def __init__(self):
@@ -220,7 +213,7 @@ class SandboxMockup(tk.Tk):
         actions = tk.Frame(card, bg="#111827")
         actions.grid(row=3, column=0, sticky="ew", padx=18, pady=(8, 18))
 
-        ttk.Button(actions, text="儲存程式碼", command=self.save_code).pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="送出執行", command=self.save_code).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="清空程式碼", style="Secondary.TButton", command=self.clear_code).pack(side="left", padx=8)
 
     def create_monitor_card(self, parent):
@@ -289,7 +282,7 @@ class SandboxMockup(tk.Tk):
 
         note = ttk.Label(
             card,
-            text="目前是展示版，尚未連接真正的 Linux Namespace、Seccomp 或 Cgroup。",
+            text="目前已透過後端 API 送出任務，並由 sandbox worker 取得 pending job 後執行。",
             style="Small.TLabel",
             wraplength=420
         )
@@ -366,29 +359,83 @@ class SandboxMockup(tk.Tk):
             messagebox.showwarning("提醒", "程式碼不能是空的。")
             return
 
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO jobs (language, source_code, status)
-            VALUES (?, ?, ?)
-            """,
-            (language, code, "pending")
-        )
-        job_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
+        try:
+            response = requests.post(
+                f"{API_URL}/jobs",
+                json={
+                    "language": language,
+                    "source_code": code
+                },
+                timeout=5
+            )
+            response.raise_for_status()
 
-        self.status_value.config(text="Pending")
-        self.set_output(
-            f"程式碼已送出。\n"
-            f"Job ID: {job_id}\n"
-            f"language: {language}\n"
-            f"source_code: 已儲存\n"
-            f"status: pending\n\n"
-            f"資料已透過後端 db.py 的 get_connection() 寫入 jobs 資料表，等待其他執行器讀取。"
-        )
-        self.add_history(f"Job #{job_id} ({language})", "Pending", "--", "SQLite")
+            job = response.json()
+            job_id = job["job_id"]
+
+            self.status_value.config(text="Pending")
+            self.set_output(
+                f"程式碼已送出。\n"
+                f"Job ID: {job_id}\n"
+                f"language: {language}\n"
+                f"status: pending\n\n"
+                f"已透過後端 API 建立任務，等待 sandbox 執行。"
+            )
+            self.add_history(f"Job #{job_id} ({language})", "Pending", "--", "API")
+
+            self.after(1000, lambda: self.check_job_result(job_id))
+
+        except requests.exceptions.RequestException as e:
+            messagebox.showerror("API 錯誤", f"無法連接後端 API：\n{e}")
+
+    def check_job_result(self, job_id):
+        try:
+            response = requests.get(
+                f"{API_URL}/jobs/{job_id}",
+                timeout=5
+            )
+            response.raise_for_status()
+
+            job = response.json()
+            status = job["status"]
+
+            self.status_value.config(text=status.capitalize())
+
+            if status in ["pending", "running"]:
+                self.set_output(
+                    f"Job ID: {job_id}\n"
+                    f"目前狀態：{status}\n\n"
+                    f"等待 sandbox 執行中..."
+                )
+                self.after(1000, lambda: self.check_job_result(job_id))
+                return
+
+            if status == "done":
+                self.set_output(
+                    f"Job ID: {job_id}\n"
+                    f"狀態：done\n\n"
+                    f"----- STDOUT -----\n"
+                    f"{job['output']}\n"
+                    f"----- STDERR -----\n"
+                    f"{job['error']}"
+                )
+                self.add_history(f"Job #{job_id}", "Done", "--", "Success")
+                return
+
+            if status == "error":
+                self.set_output(
+                    f"Job ID: {job_id}\n"
+                    f"狀態：error\n\n"
+                    f"----- STDOUT -----\n"
+                    f"{job['output']}\n"
+                    f"----- STDERR -----\n"
+                    f"{job['error']}"
+                )
+                self.add_history(f"Job #{job_id}", "Error", "--", "Failed")
+                return
+
+        except requests.exceptions.RequestException as e:
+            self.set_output(f"查詢 Job 結果失敗：\n{e}")
 
     def set_output(self, text):
         self.output_text.config(state="normal")
