@@ -2,111 +2,207 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-
 #include <sched.h>
 #include <unistd.h>
-
 #include <sys/wait.h>
+#include <sys/mount.h>
+#include <errno.h>
 
-#include "compiler.h"
 #include "limit.h"
 #include "namespace.h"
+#include "filesystem.h"
+#include "sandbox_seccomp.h"
+#include "payload.h"
+#include "result_writer.h"
 
 #define STACK_SIZE (1024 * 1024)
 
 static char child_stack[STACK_SIZE];
 static int sync_pipe[2];
+int stdout_pipe[2];
+int stderr_pipe[2];
+static char *current_job_id = NULL;
 
-int child_func(void *arg){
+void prepare_test_source(const char *job_id){
+    char app_dir[512];
+    char source_path[512];
+
+    snprintf(app_dir, sizeof(app_dir), "/tmp/sandbox/job_%s/app", job_id);
+    snprintf(source_path, sizeof(source_path), "%s/main.c", app_dir);
+
+    if(mkdir(app_dir, 0755) == -1 && errno != EEXIST){
+        perror("mkdir app_dir");
+        exit(1);
+    }
+
+    // 檢查檔案是否已經存在，如果 Python Worker 已經寫好檔案，就不要覆寫
+    if(access(source_path, F_OK) == 0){
+        fprintf(stderr, "[Parent] Test source already exists (Provided by Worker): %s\n", source_path);
+        return;
+    }
+
+    FILE *fp = fopen(source_path, "w");
+    if(fp == NULL){
+        perror("fopen source");
+        exit(1);
+    }
+
+    fprintf(fp,
+        "#include <stdio.h>\n\n"
+        "int main(){\n"
+        "    printf(\"hello sandbox\\n\");\n"
+        "    return 0;\n"
+        "}\n"
+    );
+    fclose(fp);
+
+    fprintf(stderr, "[Parent] Default test source prepared: %s\n", source_path);
+}
+
+int compile_child_func(void *arg){
+    (void)arg;
     close(sync_pipe[1]);
+
     char buf;
     if(read(sync_pipe[0], &buf, 1) == -1){
         perror("read sync_pipe");
         exit(1);
     }
 
-    char *source_file = (char *)arg;
-
-    printf("[Sandbox] PID = %d\n", getpid());
-    printf("[Sandbox] PPID = %d\n", getppid());
-    
     setup_mount_namespace();
-
+    setup_pivot_root(current_job_id);
     setup_resource_limits();
+    setup_seccomp();
 
-    prepare_build_directory();
+    if(compile_program() != 0){
+        exit(1);
+    }
+    return 0;
+}
 
-    compile_source(source_file);
+int execute_child_func(void *arg){
+    (void)arg;
+    close(sync_pipe[1]);
 
+    char buf;
+    if(read(sync_pipe[0], &buf, 1) == -1){
+        perror("read sync_pipe");
+        exit(1);
+    }
+
+    setup_mount_namespace();
+    setup_pivot_root(current_job_id);
+    setup_resource_limits();
     execute_program();
 
     return 0;
 }
 
-int main(int argc, char *argv[]){
+int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, StageResult *res){
+    res->executed = 1;
 
-    if(argc != 2){
-        fprintf(stderr,"Usage: %s <source_file>\n",argv[0]);
-        return 1;
+    if(pipe(sync_pipe) == -1 || pipe(stdout_pipe) == -1 || pipe(stderr_pipe) == -1){
+        perror("pipe creation failed");
+        return -1;
     }
 
-    char *source_file = argv[1];
-
-    printf("\n========== Sandbox ==========\n");
-    printf("Source: %s\n", source_file);
-    printf("=============================\n");
-
-    printf("[Parent] PID = %d\n\n", getpid());
-
-    if(pipe(sync_pipe) == -1){
-        perror("pipe");
-        return 1;
-    }
-
-    pid_t pid = clone(child_func,child_stack + STACK_SIZE,
-        CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET | CLONE_NEWUSER | SIGCHLD,
-        source_file
-    );
+    int clone_flags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET | CLONE_NEWUSER | SIGCHLD;
+    pid_t pid = clone(child_func, child_stack + STACK_SIZE, clone_flags, NULL);
 
     if(pid == -1){
-        perror("clone");
-        return 1;
+        fprintf(stderr, "[Parent] clone %s failed\n", stage_name);
+        return -1;
     }
 
     close(sync_pipe[0]);
+    close(stdout_pipe[1]);
+    close(stderr_pipe[1]);
+
     setup_uid_gid_map(pid);
+    setup_cgroup(pid);
+
     if(write(sync_pipe[1], "x", 1) == -1){
         perror("write sync_pipe");
-        return 1;
+        return -1;
     }
+    close(sync_pipe[1]);
 
     int status;
-
-    waitpid(pid, &status, 0);
-
-    printf("\n========== Result ==========\n");
-
-    if(WIFEXITED(status)){
-        printf("[Parent] Exit Code = %d\n",WEXITSTATUS(status));
-    }else if(WIFSIGNALED(status)){
-        printf("[Parent] Killed By Signal = %d\n",WTERMSIG(status));
+    if(waitpid(pid, &status, 0) == -1){
+        perror("waitpid");
+        return -1;
     }
 
-    printf("============================\n");
+    if(WIFEXITED(status)){
+        res->exit_code = WEXITSTATUS(status);
+    } else if(WIFSIGNALED(status)){
+        res->exit_code = 128 + WTERMSIG(status);
+    } else {
+        res->exit_code = -1;
+    }
 
-    return 0;
+    ssize_t stdout_size = read(stdout_pipe[0], res->stdout_buf, sizeof(res->stdout_buf) - 1);
+    res->stdout_buf[stdout_size > 0 ? stdout_size : 0] = '\0';
+
+    ssize_t stderr_size = read(stderr_pipe[0], res->stderr_buf, sizeof(res->stderr_buf) - 1);
+    res->stderr_buf[stderr_size > 0 ? stderr_size : 0] = '\0';
+
+    close(stdout_pipe[0]);
+    close(stderr_pipe[0]);
+
+    if(res->stdout_buf[0] != '\0'){
+        fprintf(stderr, "%s", res->stdout_buf);
+    }
+    if(res->stderr_buf[0] != '\0'){
+        fprintf(stderr, "%s", res->stderr_buf);
+    }
+
+    return status;
 }
 
+int main(int argc, char *argv[]){
+    if(argc != 2){
+        fprintf(stderr, "Usage: %s <job_id>\n", argv[0]);
+        return EXIT_FAILURE;
+    }
 
-// =====================================
-    // TODO
-    // =====================================
+    current_job_id = argv[1];
+    StageResult comp_res = {0};
+    StageResult exec_res = {0};
 
-    // chroot / pivot_root
-    // seccomp
-    // cgroup
-    // capability drop
+    fprintf(stderr, "\n========== Sandbox ==========\n");
+    fprintf(stderr, "[Parent] Managing Job ID: %s\n", current_job_id);
 
-    // =====================================
-    // Resource Limits
-    // =====================================
+    if(prepare_rootfs(current_job_id) != 0){
+        fprintf(stderr, "[Parent] Rootfs preparation failed\n");
+        return EXIT_FAILURE;
+    }
+    prepare_test_source(current_job_id);
+    if(mount_overlayfs(current_job_id) != 0){
+        return EXIT_FAILURE;
+    }
+
+    int compile_status = run_sandboxed_stage(compile_child_func, "compile", &comp_res);
+    if(compile_status == -1 || !WIFEXITED(compile_status) || WEXITSTATUS(compile_status) != 0){
+        fprintf(stderr, "[Parent] Compile stage failed\n");
+        write_combined_json(current_job_id, &comp_res, &exec_res);
+        cleanup_container_filesystem(current_job_id);
+        return EXIT_FAILURE;
+    }
+
+    fprintf(stderr, "-------------------------------- Compile stage finished ----------------------------------\n");
+
+    int exec_status = run_sandboxed_stage(execute_child_func, "execute", &exec_res);
+    write_combined_json(current_job_id, &comp_res, &exec_res);
+
+    if(exec_status == -1){
+        cleanup_container_filesystem(current_job_id);
+        return EXIT_FAILURE;
+    }
+
+    print_sandbox_result(exec_status);
+    cleanup_container_filesystem(current_job_id);
+    fprintf(stderr, "[Parent] All stages completed successfully.\n");
+    
+    return EXIT_SUCCESS;
+}
