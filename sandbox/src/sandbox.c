@@ -59,6 +59,17 @@ void prepare_test_source(const char *job_id){
     fprintf(stderr, "[Parent] Default test source prepared: %s\n", source_path);
 }
 
+static void redirect_stage_output(void){
+    close(stdout_pipe[0]);
+    close(stderr_pipe[0]);
+
+    dup2(stdout_pipe[1], STDOUT_FILENO);
+    dup2(stderr_pipe[1], STDERR_FILENO);
+
+    close(stdout_pipe[1]);
+    close(stderr_pipe[1]);
+}
+
 int compile_child_func(void *arg){
     (void)arg;
     close(sync_pipe[1]);
@@ -69,10 +80,13 @@ int compile_child_func(void *arg){
         exit(1);
     }
 
+    redirect_stage_output();
+
     setup_mount_namespace();
     setup_pivot_root(current_job_id);
     setup_resource_limits();
     setup_seccomp();
+    
 
     if(compile_program() != 0){
         exit(1);
@@ -97,6 +111,8 @@ int execute_child_func(void *arg){
 
     return 0;
 }
+
+
 
 int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, StageResult *res){
     res->executed = 1;

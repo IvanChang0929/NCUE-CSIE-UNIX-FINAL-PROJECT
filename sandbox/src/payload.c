@@ -9,7 +9,7 @@ extern char **environ;
 int compile_program(void){
     fprintf(stderr, "[Sandbox] Compiling user program...\n");
 
-    int status = system("gcc /app/main.c -o /app/user_program 2>&1");
+    int status = system("gcc /app/main.c -o /app/user_program");
 
     if(status != 0){
         fprintf(stderr, "[Sandbox] Compilation failed\n");

@@ -54,10 +54,14 @@ def process_job(job):
     workdir = Path(f"/tmp/sandbox/job_{job_id}")
 
     app_dir = workdir / "app"
-    app_dir.mkdir(parents=True, exist_ok=True) 
+    app_dir.mkdir(parents=True, exist_ok=True)
+
+    # 讓 sandbox 裡的 gcc 可以在 /app 產生 user_program
+    app_dir.chmod(0o777)
 
     source_file = app_dir / "main.c"
     write_code_to_file(code, source_file)
+    source_file.chmod(0o666)
 
     print(f"[Worker] Write code -> {source_file}")
 
@@ -65,7 +69,6 @@ def process_job(job):
 
     result = run_job_with_sandbox(job_id)
     
-    update_job_status(job_id, "finished")
     update_job_result(job_id, result)
 
 
