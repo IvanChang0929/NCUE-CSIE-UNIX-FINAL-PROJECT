@@ -1,67 +1,72 @@
+import subprocess
+import time
+import json
+import shutil
 from pathlib import Path
 from api_client import *
 
-import subprocess
-import time
-
-
 def write_code_to_file(code, file_path):
-
     with open(file_path, "w") as f:
         f.write(code)
 
+def run_job_with_sandbox(job_id):
+    result_dir = Path(f"./sandbox/result/job_{job_id}")
+    
+    try:
+        result = subprocess.run(
+            [
+                "sudo",
+                "./sandbox/build/sandbox",
+                str(job_id)
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
 
-def run_job_with_sandbox(source_file):
+        result_json_path = result_dir / "result.json"
+        
+        if result_json_path.exists():
+            with open(result_json_path, "r") as f:
+                sandbox_result = json.load(f)
+        else:
+            sandbox_result = {
+                "error": "Sandbox crashed before generating result",
+                "system_stderr": result.stderr # 把 C 程式的 stderr 抓回來除錯用
+            }
 
-    result = subprocess.run(
-        [
-            "./sandbox/build/sandbox",
-            str(source_file)
-        ],
+    except subprocess.TimeoutExpired:
+        sandbox_result = {
+            "error": "Sandbox Timeout",
+            "exit_code": -1
+        }
+        
+    finally:
+        if result_dir.exists():
+            shutil.rmtree(result_dir, ignore_errors=True)
 
-        capture_output=True,
-        text=True,
-        timeout=5
-    )
-
-    return {
-        "stdout": result.stdout,
-        "stderr": result.stderr,
-        "exit_code": result.returncode
-    }
-
+    return sandbox_result
 
 def process_job(job):
-
     job_id = job["id"]
     code = job["code"]
 
-    workdir = Path(f"./sandbox/tmp/job_{job_id}")
-    workdir.mkdir(parents=True, exist_ok=True)
+    workdir = Path(f"/tmp/sandbox/job_{job_id}")
 
-    source_file = workdir / "main.c"
+    app_dir = workdir / "app"
+    app_dir.mkdir(parents=True, exist_ok=True) 
 
+    source_file = app_dir / "main.c"
     write_code_to_file(code, source_file)
 
     print(f"[Worker] Write code -> {source_file}")
 
     update_job_status(job_id, "running")
 
-    try:
-        result = run_job_with_sandbox(source_file)
-
-        update_job_result(job_id, result)
-
-    except subprocess.TimeoutExpired:
-
-        update_job_result(
-            job_id,
-            {
-                "stdout": "",
-                "stderr": "Sandbox Timeout",
-                "exit_code": -1
-            }
-        )
+    result = run_job_with_sandbox(job_id)
+    
+    update_job_status(job_id, "finished")
+    update_job_result(job_id, result)
 
 
 def main():
@@ -73,7 +78,6 @@ def main():
 
             if not job:
                 # 沒有任務時，讓 CPU 休息 1 秒鐘，再去問資料庫
-                # 這樣既能即時處理，又不會讓 CPU 飆高
                 time.sleep(1)
                 continue
 
@@ -82,7 +86,6 @@ def main():
 
     except KeyboardInterrupt:
         print("\n[Worker] Shutting down gracefully...")
-
 
 if __name__ == "__main__":
     main()
