@@ -8,7 +8,7 @@
 
 #include "namespace.h"
 
-//之後需要 network namespace 在寫 (目前預設不需要網路)
+//之後需要網路在寫 (目前預設不需要網路)
 
 void setup_mount_namespace(){
     if(mount(NULL,"/",NULL,MS_REC | MS_PRIVATE,NULL) == -1){
@@ -16,12 +16,6 @@ void setup_mount_namespace(){
         exit(1);
     }
     printf("[Sandbox] Mount propagation isolated\n");
-
-    if(mount("proc","/proc","proc",0,NULL) == -1){
-        perror("mount proc");
-        exit(1);
-    }
-    printf("[Sandbox] /proc remounted\n");
 }
 
 static void write_file(const char *path, const char *data) {
@@ -38,24 +32,41 @@ static void write_file(const char *path, const char *data) {
     fclose(f);
 }
 
-void setup_uid_gid_map(pid_t pid){ //需要採用 docker 的預設？
+void setup_uid_gid_map(pid_t pid){
 
     char path[256];
     char map[256];
 
-    //setgroups
+    uid_t host_uid;
+    gid_t host_gid;
+
+    char *sudo_uid = getenv("SUDO_UID");
+    char *sudo_gid = getenv("SUDO_GID");
+
+    if(sudo_uid && sudo_gid){
+        host_uid = atoi(sudo_uid);
+        host_gid = atoi(sudo_gid);
+    }
+    else{
+        host_uid = getuid();
+        host_gid = getgid();
+    }
+
     snprintf(path,sizeof(path),"/proc/%d/setgroups",pid);
     write_file(path, "deny");
 
-    //uid_map
     snprintf(path,sizeof(path),"/proc/%d/uid_map",pid);
-    snprintf(map, sizeof(map),"0 %d 1\n",getuid());
+    snprintf(map,sizeof(map),"0 %d 1\n",host_uid);
     write_file(path, map);
 
-    //gid_map
     snprintf(path,sizeof(path),"/proc/%d/gid_map",pid);
-    snprintf(map,sizeof(map),"0 %d 1\n",getgid());
+    snprintf(map,sizeof(map), "0 %d 1\n",host_gid);
     write_file(path, map);
 
-    printf("[Sandbox] UID/GID mapping configured\n");
+    printf(
+        "[Parent] UID/GID mapping configured "
+        "(container root -> host %d:%d)\n",
+        host_uid,
+        host_gid
+    );
 }
