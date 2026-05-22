@@ -56,7 +56,7 @@ static void write_cgroup_file(const char *name,const char *value){
 void setup_resource_limits(){
 
     // CPU time limit
-    set_limit(RLIMIT_CPU,CPU_LIMIT,CPU_LIMIT);
+    set_limit(RLIMIT_CPU,CPU_LIMIT,CPU_LIMIT+1);
 
     // Virtual memory limit
     set_limit(RLIMIT_AS,MEMORY_LIMIT,MEMORY_LIMIT);
@@ -159,13 +159,20 @@ void print_sandbox_result(int status){
         }else if(sig == SIGSEGV){
 
             printf(
-                "[Parent] Memory limit exceeded\n"
+                "[Parent] Segmentation fault\n"
             );
 
         }else if(sig == SIGKILL){
 
             printf(
-                "[Parent] Process killed\n"
+                "[Parent] Process killed "
+                "(OOM or forced kill)\n"
+            );
+
+        }else if(sig == SIGSYS){
+
+            printf(
+                "[Parent] Blocked by seccomp\n"
             );
 
         }else{
@@ -178,5 +185,4 @@ void print_sandbox_result(int status){
     }
 
     print_resource_usage();
-
 }
