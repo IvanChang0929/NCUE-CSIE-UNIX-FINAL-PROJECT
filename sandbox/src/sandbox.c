@@ -7,6 +7,7 @@
 #include <sys/wait.h>
 #include <sys/mount.h>
 #include <errno.h>
+#include <fcntl.h>
 
 #include "limit.h"
 #include "namespace.h"
@@ -48,11 +49,12 @@ void prepare_test_source(const char *job_id){
     }
 
     fprintf(fp,
-        "#include <stdio.h>\n\n"
-        "int main(){\n"
-        "    printf(\"hello sandbox\\n\");\n"
+        "#include <stdio.h>\n"
+        "int main() {\n"
+        "    printf(\"Hello from Job %s!\\n\");\n"
         "    return 0;\n"
-        "}\n"
+        "}\n",
+        job_id
     );
     fclose(fp);
 
@@ -60,6 +62,9 @@ void prepare_test_source(const char *job_id){
 }
 
 static void redirect_stage_output(void){
+    fflush(stdout);
+    fflush(stderr);
+
     close(stdout_pipe[0]);
     close(stderr_pipe[0]);
 
@@ -80,14 +85,11 @@ int compile_child_func(void *arg){
         exit(1);
     }
 
-    redirect_stage_output();
-
     setup_mount_namespace();
     setup_pivot_root(current_job_id);
     setup_resource_limits();
     setup_seccomp();
-    
-
+    redirect_stage_output();
     if(compile_program() != 0){
         exit(1);
     }
@@ -107,17 +109,15 @@ int execute_child_func(void *arg){
     setup_mount_namespace();
     setup_pivot_root(current_job_id);
     setup_resource_limits();
+    redirect_stage_output();
     execute_program();
 
     return 0;
 }
 
-
-
-int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, StageResult *res){
+int run_sandboxed_stage(int (*child_func)(void *),const char *stage_name,StageResult *res){
     res->executed = 1;
-
-    if(pipe(sync_pipe) == -1 || pipe(stdout_pipe) == -1 || pipe(stderr_pipe) == -1){
+    if (pipe(sync_pipe) == -1 || pipe(stdout_pipe) == -1 || pipe(stderr_pipe) == -1) {
         perror("pipe creation failed");
         return -1;
     }
@@ -125,51 +125,113 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
     int clone_flags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET | CLONE_NEWUSER | SIGCHLD;
     pid_t pid = clone(child_func, child_stack + STACK_SIZE, clone_flags, NULL);
 
-    if(pid == -1){
+    if (pid == -1) {
         fprintf(stderr, "[Parent] clone %s failed\n", stage_name);
         return -1;
     }
 
-    close(sync_pipe[0]);
-    close(stdout_pipe[1]);
-    close(stderr_pipe[1]);
+    close(sync_pipe[0]);    // 父進程不讀同步訊號
+    close(stdout_pipe[1]);  // 父進程不寫標準輸出
+    close(stderr_pipe[1]);  // 父進程不寫標準錯誤
 
     setup_uid_gid_map(pid);
     setup_cgroup(pid);
 
-    if(write(sync_pipe[1], "x", 1) == -1){
+    if (write(sync_pipe[1], "x", 1) == -1) {
         perror("write sync_pipe");
         return -1;
     }
     close(sync_pipe[1]);
 
+    fcntl(stdout_pipe[0], F_SETFL, fcntl(stdout_pipe[0], F_GETFL) | O_NONBLOCK);
+    fcntl(stderr_pipe[0], F_SETFL, fcntl(stderr_pipe[0], F_GETFL) | O_NONBLOCK);
+
     int status;
-    if(waitpid(pid, &status, 0) == -1){
-        perror("waitpid");
-        return -1;
+    int elapsed = 0;
+    size_t out_total = 0;
+    size_t err_total = 0;
+    ssize_t n;
+
+    while (1) {
+        // --- 邊等邊讀：持續抽乾 Pipe，避免子進程被 IO 阻塞 ---
+        
+        // 嘗試讀取 stdout
+        while (out_total < sizeof(res->stdout_buf) - 1) {
+            n = read(stdout_pipe[0], res->stdout_buf + out_total, sizeof(res->stdout_buf) - out_total - 1);
+            if (n > 0) out_total += n;
+            else break; // 讀空了或發生 EAGAIN
+        }
+
+        // 嘗試讀取 stderr
+        while (err_total < sizeof(res->stderr_buf) - 1) {
+            n = read(stderr_pipe[0], res->stderr_buf + err_total, sizeof(res->stderr_buf) - err_total - 1);
+            if (n > 0) err_total += n;
+            else break; // 讀空了或發生 EAGAIN
+        }
+
+        // 檢查子進程狀態
+        pid_t ret = waitpid(pid, &status, WNOHANG);
+        if (ret == pid) {
+            break; // 子進程結束
+        }
+        if (ret == -1) {
+            perror("waitpid");
+            return -1;
+        }
+
+        /*
+        // Timeout 處理機制
+        // 注意：因為下面改用 usleep(100000) 也就是 0.1 秒
+        // 所以 5 秒的 Timeout 條件要改成 elapsed >= 50
+        if (elapsed >= 50) {
+            fprintf(stderr, "[Parent] Stage %s timeout\n", stage_name);
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0); // 回收殭屍進程
+            
+            res->exit_code = 124;
+            snprintf(res->stderr_buf, sizeof(res->stderr_buf), "TIMEOUT");
+            
+            close(stdout_pipe[0]);
+            close(stderr_pipe[0]);
+            return status;
+        }
+        */
+
+        // 用 0.1 秒取代 1 秒，讓讀取更即時，減少 Pipe 滿載的機會
+        usleep(100000); 
+        elapsed++;
     }
 
-    if(WIFEXITED(status)){
+    while (out_total < sizeof(res->stdout_buf) - 1) {
+        n = read(stdout_pipe[0], res->stdout_buf + out_total, sizeof(res->stdout_buf) - out_total - 1);
+        if (n > 0) out_total += n;
+        else break;
+    }
+    while (err_total < sizeof(res->stderr_buf) - 1) {
+        n = read(stderr_pipe[0], res->stderr_buf + err_total, sizeof(res->stderr_buf) - err_total - 1);
+        if (n > 0) err_total += n;
+        else break;
+    }
+
+    // 確保字串有結尾符號
+    res->stdout_buf[out_total] = '\0';
+    res->stderr_buf[err_total] = '\0';
+
+    close(stdout_pipe[0]);
+    close(stderr_pipe[0]);
+
+    if (WIFEXITED(status)) {
         res->exit_code = WEXITSTATUS(status);
-    } else if(WIFSIGNALED(status)){
+    } else if (WIFSIGNALED(status)) {
         res->exit_code = 128 + WTERMSIG(status);
     } else {
         res->exit_code = -1;
     }
 
-    ssize_t stdout_size = read(stdout_pipe[0], res->stdout_buf, sizeof(res->stdout_buf) - 1);
-    res->stdout_buf[stdout_size > 0 ? stdout_size : 0] = '\0';
-
-    ssize_t stderr_size = read(stderr_pipe[0], res->stderr_buf, sizeof(res->stderr_buf) - 1);
-    res->stderr_buf[stderr_size > 0 ? stderr_size : 0] = '\0';
-
-    close(stdout_pipe[0]);
-    close(stderr_pipe[0]);
-
-    if(res->stdout_buf[0] != '\0'){
+    if (res->stdout_buf[0] != '\0') {
         fprintf(stderr, "%s", res->stdout_buf);
     }
-    if(res->stderr_buf[0] != '\0'){
+    if (res->stderr_buf[0] != '\0') {
         fprintf(stderr, "%s", res->stderr_buf);
     }
 
