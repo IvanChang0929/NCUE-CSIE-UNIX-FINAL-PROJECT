@@ -24,19 +24,7 @@ void execute_program(void){
     fprintf(stderr, "[Sandbox] Dropping privileges...\n");
     setup_seccomp();
     fprintf(stderr, "[Sandbox] Executing user program...\n");
-
-    fflush(stdout);
-    fflush(stderr);
-
-    close(stdout_pipe[0]);
-    close(stderr_pipe[0]);
-
-    dup2(stdout_pipe[1], STDOUT_FILENO);
-    dup2(stderr_pipe[1], STDERR_FILENO);
-
-    close(stdout_pipe[1]);
-    close(stderr_pipe[1]);
-
+    
     char *exec_args[] = {"/app/user_program", NULL};
     execve("/app/user_program", exec_args, environ);
 
