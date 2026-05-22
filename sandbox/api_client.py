@@ -115,7 +115,13 @@ def update_job_result(job_id, sandbox_result):
     else:
         status = "done"
         output = execute_stdout
-        error = execute_stderr
+
+        error = (
+            "----- COMPILE STDERR -----\n"
+            f"{compile_stderr}\n\n"
+            "----- EXECUTE STDERR -----\n"
+            f"{execute_stderr}"
+        )
 
     response = requests.patch(
         f"{API_URL}/jobs/{job_id}",
