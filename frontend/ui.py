@@ -1,10 +1,15 @@
 import tkinter as tk
 import requests
 
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from datetime import datetime
+from pathlib import Path
 
 API_URL = "http://127.0.0.1:8000"
+
+class _HiddenValue:
+    def config(self, **kwargs):
+        pass
 
 class SandboxMockup(tk.Tk):
     def __init__(self):
@@ -20,6 +25,7 @@ class SandboxMockup(tk.Tk):
         self.create_styles()
         self.create_layout()
         self.load_demo("normal")
+        self.refresh_containers()
 
 
     def create_styles(self):
@@ -132,21 +138,47 @@ class SandboxMockup(tk.Tk):
             darkcolor="#22c55e"
         )
 
+        style.configure(
+            "Treeview",
+            background="#020617",
+            foreground="#e5e7eb",
+            fieldbackground="#020617",
+            bordercolor="#334155",
+            rowheight=30,
+            font=("Menlo", 11)
+        )
+        style.configure(
+            "Treeview.Heading",
+            background="#111827",
+            foreground="#ffffff",
+            font=("Arial", 11, "bold")
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", "#2563eb")]
+        )
+
     def create_layout(self):
         self.create_header()
 
         main = tk.Frame(self, bg="#0f172a")
         main.pack(fill="both", expand=True, padx=24, pady=18)
 
-        main.columnconfigure(0, weight=3)
-        main.columnconfigure(1, weight=2)
+        main.columnconfigure(0, weight=1, uniform="top")
+        main.columnconfigure(1, weight=1, uniform="top")
         main.rowconfigure(0, weight=3)
         main.rowconfigure(1, weight=2)
 
         self.create_editor_card(main)
-        self.create_monitor_card(main)
         self.create_output_card(main)
-        self.create_history_card(main)
+        self.create_container_monitor_card(main)
+
+        # 舊版非介面邏輯會呼叫這些物件，這裡保留成隱藏 no-op，避免改動 API 流程。
+        self.status_value = _HiddenValue()
+        self.cpu_value = _HiddenValue()
+        self.mem_value = _HiddenValue()
+        self.cpu_bar = _HiddenValue()
+        self.mem_bar = _HiddenValue()
 
     def create_header(self):
         header = tk.Frame(self, bg="#0f172a")
@@ -161,14 +193,14 @@ class SandboxMockup(tk.Tk):
 
         subtitle = ttk.Label(
             header,
-            text="Tkinter 前端展示原型：程式碼輸入、執行結果、歷史紀錄、資源監控與 Demo 測試情境。",
+            text="前端展示型：左側輸入程式碼、右側顯示執行結果，下方針對每個 Container 顯示狀態。",
             style="Subtitle.TLabel"
         )
         subtitle.pack(anchor="w", pady=(6, 0))
 
-    def make_card(self, parent, row, column, sticky="nsew"):
+    def make_card(self, parent, row, column, sticky="nsew", columnspan=1):
         wrapper = tk.Frame(parent, bg="#334155")
-        wrapper.grid(row=row, column=column, sticky=sticky, padx=10, pady=10)
+        wrapper.grid(row=row, column=column, columnspan=columnspan, sticky=sticky, padx=10, pady=10)
         wrapper.columnconfigure(0, weight=1)
         wrapper.rowconfigure(0, weight=1)
 
@@ -213,96 +245,16 @@ class SandboxMockup(tk.Tk):
         actions = tk.Frame(card, bg="#111827")
         actions.grid(row=3, column=0, sticky="ew", padx=18, pady=(8, 18))
 
-        ttk.Button(actions, text="送出執行", command=self.save_code).pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="讀取檔案", command=self.choose_code_file).pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="送出執行", command=self.save_code).pack(side="left", padx=8)
         ttk.Button(actions, text="清空程式碼", style="Secondary.TButton", command=self.clear_code).pack(side="left", padx=8)
 
-    def create_monitor_card(self, parent):
-        card = self.make_card(parent, 0, 1)
-        card.columnconfigure(0, weight=1)
-
-        ttk.Label(card, text="沙盒監控面板", style="CardTitle.TLabel").pack(anchor="w", padx=18, pady=(18, 12))
-
-        stats = tk.Frame(card, bg="#111827")
-        stats.pack(fill="x", padx=18)
-        stats.columnconfigure(0, weight=1)
-        stats.columnconfigure(1, weight=1)
-        stats.columnconfigure(2, weight=1)
-
-        self.cpu_value = self.create_stat_box(stats, "CPU 使用率", "12%", 0)
-        self.mem_value = self.create_stat_box(stats, "記憶體", "67 MB", 1)
-        self.status_value = self.create_stat_box(stats, "狀態", "Idle", 2)
-
-        progress_frame = tk.Frame(card, bg="#111827")
-        progress_frame.pack(fill="x", padx=18, pady=(14, 18))
-
-        ttk.Label(progress_frame, text="CPU", style="Small.TLabel").pack(anchor="w")
-        self.cpu_bar = ttk.Progressbar(
-            progress_frame,
-            orient="horizontal",
-            mode="determinate",
-            maximum=100,
-            value=12,
-            style="green.Horizontal.TProgressbar"
-        )
-        self.cpu_bar.pack(fill="x", pady=(4, 10))
-
-        ttk.Label(progress_frame, text="Memory", style="Small.TLabel").pack(anchor="w")
-        self.mem_bar = ttk.Progressbar(
-            progress_frame,
-            orient="horizontal",
-            mode="determinate",
-            maximum=256,
-            value=64,
-            style="green.Horizontal.TProgressbar"
-        )
-        self.mem_bar.pack(fill="x", pady=(4, 0))
-
-        ttk.Label(card, text="Demo 測試情境", style="CardTitle.TLabel").pack(anchor="w", padx=18, pady=(12, 12))
-
-        demo_area = tk.Frame(card, bg="#111827")
-        demo_area.pack(fill="x", padx=18)
-        demo_area.columnconfigure(0, weight=1)
-        demo_area.columnconfigure(1, weight=1)
-
-        demos = [
-            ("正常程式", "normal"),
-            ("無限迴圈", "loop"),
-            ("記憶體爆掉", "memory"),
-            ("網路連線失敗", "network")
-        ]
-
-        for index, (text, demo_type) in enumerate(demos):
-            btn = ttk.Button(
-                demo_area,
-                text=text,
-                style="Secondary.TButton",
-                command=lambda t=demo_type: self.load_demo(t)
-            )
-            btn.grid(row=index // 2, column=index % 2, sticky="ew", padx=5, pady=5)
-
-        note = ttk.Label(
-            card,
-            text="目前已透過後端 API 送出任務，並由 sandbox worker 取得 pending job 後執行。",
-            style="Small.TLabel",
-            wraplength=420
-        )
-        note.pack(anchor="w", padx=18, pady=(18, 0))
-
-    def create_stat_box(self, parent, title, value, column):
-        box = tk.Frame(parent, bg="#020617", highlightbackground="#334155", highlightthickness=1)
-        box.grid(row=0, column=column, sticky="nsew", padx=5)
-
-        ttk.Label(box, text=title, style="Small.TLabel").pack(anchor="w", padx=12, pady=(12, 4))
-        label = ttk.Label(box, text=value, style="Value.TLabel")
-        label.pack(anchor="w", padx=12, pady=(0, 12))
-        return label
-
     def create_output_card(self, parent):
-        card = self.make_card(parent, 1, 0)
+        card = self.make_card(parent, 0, 1)
         card.columnconfigure(0, weight=1)
         card.rowconfigure(1, weight=1)
 
-        ttk.Label(card, text="執行結果", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w", padx=18, pady=(18, 8))
+        ttk.Label(card, text="執行結果輸出", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w", padx=18, pady=(18, 8))
 
         self.output_text = tk.Text(
             card,
@@ -313,42 +265,190 @@ class SandboxMockup(tk.Tk):
             font=("Menlo", 12),
             wrap="word",
             padx=14,
-            pady=14,
-            height=8
+            pady=14
         )
         self.output_text.grid(row=1, column=0, sticky="nsew", padx=18, pady=(0, 18))
         self.set_output("尚未執行程式。")
 
-    def create_history_card(self, parent):
-        card = self.make_card(parent, 1, 1)
+    def create_container_monitor_card(self, parent):
+        card = self.make_card(parent, 1, 0, columnspan=2)
         card.columnconfigure(0, weight=1)
         card.rowconfigure(1, weight=1)
 
-        ttk.Label(card, text="歷史紀錄", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w", padx=18, pady=(18, 8))
+        header = tk.Frame(card, bg="#111827")
+        header.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 10))
+        header.columnconfigure(0, weight=1)
 
-        history_outer = tk.Frame(card, bg="#111827")
-        history_outer.grid(row=1, column=0, sticky="nsew", padx=18, pady=(0, 18))
-        history_outer.columnconfigure(0, weight=1)
-        history_outer.rowconfigure(0, weight=1)
+        ttk.Label(header, text="Container 狀態監控", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Button(header, text="重新整理", style="Secondary.TButton", command=self.refresh_containers).grid(row=0, column=1, sticky="e")
 
-        self.history_list = tk.Listbox(
-            history_outer,
-            bg="#020617",
-            fg="#e5e7eb",
-            selectbackground="#2563eb",
-            relief="flat",
-            font=("Menlo", 11),
-            height=8
+        columns = (
+            "name",
+            "container_id",
+            "job_id",
+            "image",
+            "status",
+            "cpu",
+            "memory",
+            "started"
         )
-        self.history_list.grid(row=0, column=0, sticky="nsew")
 
-        scrollbar = ttk.Scrollbar(history_outer, orient="vertical", command=self.history_list.yview)
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        self.history_list.configure(yscrollcommand=scrollbar.set)
+        table_outer = tk.Frame(card, bg="#111827")
+        table_outer.grid(row=1, column=0, sticky="nsew", padx=18, pady=(0, 18))
+        table_outer.columnconfigure(0, weight=1)
+        table_outer.rowconfigure(0, weight=1)
 
-        self.add_history("Hello Sandbox", "Success", "0.03s", "12 MB")
-        self.add_history("Infinite Loop Test", "Timeout", "5.00s", "CPU limit")
-        self.add_history("Memory Test", "Killed", "--", "256 MB")
+        self.container_table = ttk.Treeview(
+            table_outer,
+            columns=columns,
+            show="headings",
+            height=7
+        )
+
+        headings = {
+            "name": "Name",
+            "container_id": "Container ID",
+            "job_id": "Job ID",
+            "image": "Image",
+            "status": "Status",
+            "cpu": "CPU (%)",
+            "memory": "Memory",
+            "started": "Last started"
+        }
+
+        widths = {
+            "name": 150,
+            "container_id": 150,
+            "job_id": 80,
+            "image": 160,
+            "status": 110,
+            "cpu": 90,
+            "memory": 110,
+            "started": 130
+        }
+
+        for col in columns:
+            self.container_table.heading(col, text=headings[col])
+            self.container_table.column(col, width=widths[col], anchor="w")
+
+        self.container_table.grid(row=0, column=0, sticky="nsew")
+
+        y_scrollbar = ttk.Scrollbar(table_outer, orient="vertical", command=self.container_table.yview)
+        y_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.container_table.configure(yscrollcommand=y_scrollbar.set)
+
+    def choose_code_file(self):
+        file_path = filedialog.askopenfilename(
+            title="選擇程式碼檔案",
+            filetypes=[
+                ("Code Files", "*.c *.py"),
+                ("C Files", "*.c"),
+                ("Python Files", "*.py"),
+                ("All Files", "*.*")
+            ]
+        )
+
+        if not file_path:
+            return
+
+        path = Path(file_path)
+
+        try:
+            code = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            code = path.read_text(encoding="big5", errors="ignore")
+        except Exception as e:
+            messagebox.showerror("讀取失敗", f"無法讀取檔案：\n{e}")
+            return
+
+        if path.suffix == ".c":
+            self.language_var.set("C")
+        elif path.suffix == ".py":
+            self.language_var.set("Python")
+
+        self.set_code(code)
+        self.set_output(
+            f"已讀取檔案：{path.name}\n"
+            f"語言：{self.language_var.get()}\n\n"
+            f"檔案內容已載入程式碼輸入區，可以直接送出執行。"
+        )
+
+    def refresh_containers(self):
+        """更新每個 container 的狀態。若後端尚未提供 /containers，會先顯示 demo 資料。"""
+        try:
+            response = requests.get(f"{API_URL}/containers", timeout=2)
+            response.raise_for_status()
+            containers = response.json()
+        except requests.exceptions.RequestException:
+            containers = [
+                {
+                    "name": "sandbox_c_001",
+                    "container_id": "5beebd5141c7",
+                    "job_id": "1",
+                    "image": "sandbox-c-runner",
+                    "status": "running",
+                    "cpu": "42",
+                    "memory": "80 MB",
+                    "started": "1 min ago"
+                },
+                {
+                    "name": "sandbox_py_002",
+                    "container_id": "fb8c2c25388e",
+                    "job_id": "2",
+                    "image": "sandbox-python",
+                    "status": "exited",
+                    "cpu": "0",
+                    "memory": "0 MB",
+                    "started": "10 mins ago"
+                },
+                {
+                    "name": "sandbox_c_003",
+                    "container_id": "6ce49fda0c2e",
+                    "job_id": "3",
+                    "image": "sandbox-c-runner",
+                    "status": "timeout",
+                    "cpu": "100",
+                    "memory": "256 MB",
+                    "started": "25 mins ago"
+                }
+            ]
+
+        for item in self.container_table.get_children():
+            self.container_table.delete(item)
+
+        for container in containers:
+            self.container_table.insert(
+                "",
+                "end",
+                values=(
+                    container.get("name", "-"),
+                    container.get("container_id", "-"),
+                    container.get("job_id", "-"),
+                    container.get("image", "-"),
+                    container.get("status", "-"),
+                    container.get("cpu", container.get("cpu_percent", "-")),
+                    container.get("memory", container.get("memory_usage", "-")),
+                    container.get("started", container.get("last_started", "-"))
+                )
+            )
+
+        self.after(3000, self.refresh_containers)
+
+    def create_monitor_card(self, parent):
+        pass
+
+    def create_stat_box(self, parent, title, value, column):
+        box = tk.Frame(parent, bg="#020617", highlightbackground="#334155", highlightthickness=1)
+        box.grid(row=0, column=column, sticky="nsew", padx=5)
+
+        ttk.Label(box, text=title, style="Small.TLabel").pack(anchor="w", padx=12, pady=(12, 4))
+        label = ttk.Label(box, text=value, style="Value.TLabel")
+        label.pack(anchor="w", padx=12, pady=(0, 12))
+        return label
+
+    def create_history_card(self, parent):
+        # 新介面不顯示歷史紀錄；保留空函式避免影響舊版結構。
+        pass
 
 
     def save_code(self):
@@ -567,9 +667,8 @@ class SandboxMockup(tk.Tk):
         self.mem_bar.config(value=64)
 
     def add_history(self, name, status, time_used, memory):
-        now = datetime.now().strftime("%H:%M:%S")
-        record = f"[{now}] {name:<22} | {status:<8} | time: {time_used:<7} | memory: {memory}"
-        self.history_list.insert(0, record)
+        # 新介面不顯示 log / history；保留函式讓原本的執行流程不用改。
+        pass
 
 
 if __name__ == "__main__":
