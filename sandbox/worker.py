@@ -45,9 +45,7 @@ def get_language_config(language):
 
 
 def run_job_with_sandbox(job_id, language):
-    result_dir = Path(
-        f"./sandbox/result/job_{job_id}"
-    )
+    result_dir = Path(f"./sandbox/result/job_{job_id}")
     try:
         result = subprocess.run(
             [
@@ -56,22 +54,26 @@ def run_job_with_sandbox(job_id, language):
                 str(job_id),
                 language
             ],
-            capture_output=True,
+            capture_output=True,  # 攔截了沙箱所有的 printf 與 fprintf
             text=True
         )
-        result_json_path = (
-            result_dir / "result.json"
-        )
+        
+        result_json_path = result_dir / "result.json"
 
         if result_json_path.exists():
             with open(result_json_path, "r") as f:
                 sandbox_result = json.load(f)
+                
+            if "compile" in sandbox_result:
+                if not sandbox_result["compile"].get("stderr", "").strip() and result.stderr.strip():
+                    sandbox_result["compile"]["stderr"] = result.stderr
         else:
             sandbox_result = {
                 "error": "Sandbox crashed before generating result",
                 "system_stderr": result.stderr,
                 "exit_code": result.returncode
             }
+            
     except subprocess.TimeoutExpired:
         sandbox_result = {
             "error": "Sandbox Timeout",
@@ -82,6 +84,8 @@ def run_job_with_sandbox(job_id, language):
     finally:
         if result_dir.exists():
             shutil.rmtree(result_dir)
+            pass
+            
     return sandbox_result
 
 
