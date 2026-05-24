@@ -75,13 +75,21 @@ void write_combined_json(const char *job_id, StageResult *comp, StageResult *exe
     if(exec->executed){
         escape_json(exec->stdout_buf, esc_out);
         escape_json(exec->stderr_buf, esc_err);
-        fprintf(fjson, "  \"execute\": {\n");
+        fprintf(fjson, " \"execute\": {\n");
         fprintf(fjson, "    \"exit_code\": %d,\n", exec->exit_code);
+        
+        if (exec->status_message[0] != '\0') {
+            fprintf(fjson, "    \"status_message\": \"%s\",\n", exec->status_message);
+        } else {
+            // 如果陣列是空的，代表是正常自己結束的程式
+            fprintf(fjson, "    \"status_message\": \"Normal Exit\",\n");
+        }
         fprintf(fjson, "    \"stdout\": \"%s\",\n", esc_out);
-        fprintf(fjson, "    \"stderr\": \"%s\"\n", esc_err);
+        fprintf(fjson, "    \"stderr\": \"%s\",\n", esc_err);
+        fprintf(fjson, "    \"time_ms\": %ld,\n", exec->time_ms);
+        fprintf(fjson, "    \"memory_kb\": %ld\n", exec->memory_kb);
         fprintf(fjson, "  }\n");
     }
-
     fprintf(fjson, "}\n");
     fclose(fjson);
     

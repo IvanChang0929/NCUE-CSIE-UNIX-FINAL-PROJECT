@@ -18,7 +18,6 @@ def print_job_step(label, value, is_last=False):
 def init_workspace():
     base_dir = Path("/tmp/sandbox")
     if not base_dir.exists():
-        # 如果不存在，建立它並給予 777 權限，確保 C (sudo) 和 Python 都不會被卡住
         base_dir.mkdir(parents=True, exist_ok=True)
         base_dir.chmod(0o777)
 
@@ -58,48 +57,10 @@ def run_job_with_sandbox(job_id):
         }
         
     finally:
-        # 清理 Host 端的實體檔案輸出 (C 沙盒已經負責清除了 /tmp 內的系統檔案)
         if result_dir.exists():
             shutil.rmtree(result_dir)
 
     return sandbox_result
-
-
-def analyze_verdict(sandbox_result):
-    # 1. 系統層級崩潰
-    if "error" in sandbox_result:
-        return "System Error"
-
-    compile_data = sandbox_result.get("compile", {})
-    execute_data = sandbox_result.get("execute", {})
-
-    comp_exit_code = compile_data.get("exit_code", -1)
-    exec_exit_code = execute_data.get("exit_code", -1)
-
-    if comp_exit_code != 0:
-        return "Compilation Error "
-
-    if exec_exit_code == 0:
-        return "Accepted"  
-
-    if exec_exit_code == 153:
-        return "Output Limit Exceeded (OLE)"
-
-    if exec_exit_code == 137:
-        return "Time / Memory Limit Exceeded (TLE/MLE)"
-    
-    if exec_exit_code == 159:
-        return "Security Violation (Blocked by Seccomp)"
-
-
-    if exec_exit_code == 139:
-        return "Runtime Error (Segmentation Fault)"
-    if exec_exit_code == 136:
-        return "Runtime Error (Floating Point Exception)"
-    if exec_exit_code == 134:
-        return "Runtime Error (Aborted / Assert Failed)"
-
-    return f"Runtime Error (Exit Code {exec_exit_code})"
 
 def process_job(job):
     job_id = job["id"]
@@ -120,10 +81,9 @@ def process_job(job):
     print_job_step("API", "status -> running")
 
     result = run_job_with_sandbox(job_id)
-
-    verdict = analyze_verdict(result)
-    print_job_step("Verdict", verdict, is_last=True)
-
+    
+    # 2. Worker 不再進行任何 Verdict 判斷，直接將原始數據上傳給後端 API
+    print(f"[Worker] Job {job_id} Sandbox Execution Finished.")
     update_job_result(job_id, result)
 
 def main():

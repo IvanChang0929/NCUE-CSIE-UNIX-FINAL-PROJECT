@@ -59,7 +59,7 @@ void setup_resource_limits(){
     set_limit(RLIMIT_CPU,CPU_LIMIT,CPU_LIMIT+1);
 
     // Virtual memory limit
-    //set_limit(RLIMIT_AS,MEMORY_LIMIT,MEMORY_LIMIT);
+    set_limit(RLIMIT_AS,MEMORY_LIMIT,MEMORY_LIMIT);
 
     // File descriptor limit
     set_limit(RLIMIT_NOFILE,NOFILE_LIMIT,NOFILE_LIMIT);

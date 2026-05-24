@@ -60,7 +60,10 @@ def update_job_result(job_id, sandbox_result):
         print_system_error(job_id, sandbox_result)
         return
 
-    # 2. 正常有 result.json
+    # compile exit_code != 0  → error，顯示 Compile Error
+    # compile 成功但 execute exit_code != 0 → error，顯示 Runtime Error
+    # compile 和 execute 都成功 → done，output 顯示 execute.stdout
+
     compile_result = sandbox_result.get("compile", {})
     execute_result = sandbox_result.get("execute", {})
 
@@ -72,6 +75,9 @@ def update_job_result(job_id, sandbox_result):
 
     execute_stdout = execute_result.get("stdout", "")
     execute_stderr = execute_result.get("stderr", "")
+    
+    # ▼ 新增：從 JSON 中抓取 status_message，預設為 Normal Exit
+    status_message = execute_result.get("status_message", "Normal Exit")
 
     # 編譯失敗
     if compile_exit_code != 0:
