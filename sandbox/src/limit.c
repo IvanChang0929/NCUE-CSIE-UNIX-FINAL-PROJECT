@@ -16,7 +16,7 @@
 
 #define CPU_LIMIT          3
 #define MEMORY_LIMIT       (256 * 1024 * 1024)
-#define NPROC_LIMIT        1
+#define NPROC_LIMIT        16
 #define NOFILE_LIMIT       32
 #define FILESIZE_LIMIT     (1 * 1024 * 1024)
 
@@ -59,7 +59,7 @@ void setup_resource_limits(){
     set_limit(RLIMIT_CPU,CPU_LIMIT,CPU_LIMIT+1);
 
     // Virtual memory limit
-    set_limit(RLIMIT_AS,MEMORY_LIMIT,MEMORY_LIMIT);
+    //set_limit(RLIMIT_AS,MEMORY_LIMIT,MEMORY_LIMIT);
 
     // File descriptor limit
     set_limit(RLIMIT_NOFILE,NOFILE_LIMIT,NOFILE_LIMIT);
