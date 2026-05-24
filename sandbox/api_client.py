@@ -70,9 +70,9 @@ def update_job_result(job_id, sandbox_result):
         print(error)
         return
 
-    #compile exit_code != 0  → error，顯示 Compile Error
-    #compile 成功但 execute exit_code != 0 → error，顯示 Runtime Error
-    #compile 和 execute 都成功 → done，output 顯示 execute.stdout
+    # compile exit_code != 0  → error，顯示 Compile Error
+    # compile 成功但 execute exit_code != 0 → error，顯示 Runtime Error
+    # compile 和 execute 都成功 → done，output 顯示 execute.stdout
 
     compile_result = sandbox_result.get("compile", {})
     execute_result = sandbox_result.get("execute", {})
@@ -84,6 +84,9 @@ def update_job_result(job_id, sandbox_result):
     execute_exit_code = execute_result.get("exit_code", -1)
     execute_stdout = execute_result.get("stdout", "")
     execute_stderr = execute_result.get("stderr", "")
+    
+    # ▼ 新增：從 JSON 中抓取 status_message，預設為 Normal Exit
+    status_message = execute_result.get("status_message", "Normal Exit")
 
     # 1. 編譯失敗
     if compile_exit_code != 0:
@@ -102,9 +105,12 @@ def update_job_result(job_id, sandbox_result):
     elif execute_exit_code != 0:
         status = "error"
         output = execute_stdout
+        
+        # ▼ 將 status_message 加進 error 字串中，方便從後端或資料庫直接看死因
         error = (
             "Runtime Error\n\n"
-            f"Exit Code: {execute_exit_code}\n\n"
+            f"Exit Code: {execute_exit_code}\n"
+            f"Status: {status_message}\n\n"
             "----- EXECUTE STDOUT -----\n"
             f"{execute_stdout}\n\n"
             "----- EXECUTE STDERR -----\n"
@@ -116,7 +122,10 @@ def update_job_result(job_id, sandbox_result):
         status = "done"
         output = execute_stdout
 
+        # ▼ 即使成功，也把狀態訊息記錄在 error 欄位備查
         error = (
+            "----- EXECUTE STATUS -----\n"
+            f"{status_message}\n\n"
             "----- COMPILE STDERR -----\n"
             f"{compile_stderr}\n\n"
             "----- EXECUTE STDERR -----\n"
@@ -138,12 +147,13 @@ def update_job_result(job_id, sandbox_result):
     print("========== SANDBOX RESULT ==========")
     print(f"Compile Exit Code: {compile_exit_code}")
     print(f"Execute Exit Code: {execute_exit_code}")
-    print(f"Final Status: {status}")
+    print(f"Status Message:    {status_message}") # ▼ 印出轉譯後的系統狀態
+    print(f"Final Status:      {status}")
 
     print("\n----- OUTPUT -----")
     print(output)
 
-    print("----- ERROR -----")
+    print("\n----- ERROR -----")
     print(error)
 
     print("====================================")
