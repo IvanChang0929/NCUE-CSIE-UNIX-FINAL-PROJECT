@@ -55,12 +55,12 @@ void setup_uid_gid_map(pid_t pid){
     snprintf(path,sizeof(path),"/proc/%d/setgroups",pid);
     write_file(path, "deny");
 
-    snprintf(path,sizeof(path),"/proc/%d/uid_map",pid);
-    snprintf(map,sizeof(map),"0 %d 1\n",host_uid);
+    snprintf(path, sizeof(path), "/proc/%d/uid_map", pid);
+    snprintf(map, sizeof(map), "0 %d 65536\n", host_uid, host_uid);
     write_file(path, map);
 
-    snprintf(path,sizeof(path),"/proc/%d/gid_map",pid);
-    snprintf(map,sizeof(map), "0 %d 1\n",host_gid);
+    snprintf(path, sizeof(path), "/proc/%d/gid_map", pid);
+    snprintf(map, sizeof(map), "0 %d 65536\n", host_gid, host_gid);
     write_file(path, map);
 
     printf(
