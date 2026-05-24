@@ -11,7 +11,17 @@
 
 #include "filesystem.h"
 
-#define BASE_IMAGE_DIR "./sandbox/images/base_rootfs"
+#define BASE_IMAGE_DIR "./sandbox/image/base_rootfs"
+
+uid_t get_real_uid(void) {
+    char *sudo_uid = getenv("SUDO_UID");
+    return sudo_uid ? atoi(sudo_uid) : getuid();
+}
+
+gid_t get_real_gid(void) {
+    char *sudo_gid = getenv("SUDO_GID");
+    return sudo_gid ? atoi(sudo_gid) : getgid();
+}
 
 static int touch_file(const char *path) {
     FILE *f = fopen(path, "w");
@@ -53,102 +63,58 @@ static void build_paths(const char *job_id,sandbox_paths *paths){
     snprintf(paths->host_app_dir,PATH_SIZE,"%s/app", paths->runtime_dir);
     snprintf(paths->container_app_dir,PATH_SIZE, "%s/app",paths->merged_dir);
 
+    snprintf(paths->host_res_dir,PATH_SIZE, "./sandbox/result/job_%s", job_id);
+    snprintf(paths->container_res_dir,PATH_SIZE, "%s/output",paths->merged_dir);
+
 };
 
-int prepare_rootfs(const char *job_id){
-
-    sandbox_paths paths;
-    build_paths(job_id, &paths);
-
-    printf(
-        "[Parent] Preparing runtime for Job %s...\n",
-        job_id
-    );
-
-    if(mkdir_p(paths.runtime_dir, 0755) == -1){
-        perror("mkdir_p runtime_dir");
+static int prepare_dir(const char *path, mode_t dir_mode, uid_t uid, gid_t gid, int set_owner) {
+    if (mkdir_p(path, dir_mode) == -1 && errno != EEXIST) {
+        fprintf(stderr, "Failed to create directory %s: ", path);
+        perror(""); 
         return -1;
     }
 
-    if(mkdir(paths.upper_dir, 0755) == -1 &&
-       errno != EEXIST){
-        perror("mkdir upper_dir");
-        return -1;
-    }
-
-    if(mkdir(paths.work_dir, 0755) == -1 &&
-       errno != EEXIST){
-        perror("mkdir work_dir");
-        return -1;
-    }
-
-    if(mkdir(paths.merged_dir, 0755) == -1 &&
-       errno != EEXIST){
-        perror("mkdir merged_dir");
-        return -1;
-    }
-
-    printf("[Parent] Runtime directories ready\n");
-
-    return 0;
-}
-
-int mount_secure_container(const char *job_id) {
-    char upper_dir[512], work_dir[512], merged_dir[512]; 
-    char overlay_options[2048];                          
-    char target[1024];                                   
-    char host_job_dir[1024], container_app_dir[1024]; // 統一在最上方宣告 1024 大小
-
-    snprintf(upper_dir,  sizeof(upper_dir),  "./sandbox/containers/job_%s/diff", job_id);
-    snprintf(work_dir,   sizeof(work_dir),   "./sandbox/containers/job_%s/work", job_id);
-    snprintf(merged_dir, sizeof(merged_dir), "./sandbox/containers/job_%s/merged", job_id);
-
-    printf("[Parent] Setting up isolated layers for Job %s...\n", job_id);
-
-    mkdir_p(upper_dir, 0755); mkdir_p(work_dir, 0755); mkdir_p(merged_dir, 0755);
-
-    // 掛載 OverlayFS 基礎層
-    snprintf(overlay_options, sizeof(overlay_options), "lowerdir=%s,upperdir=%s,workdir=%s", BASE_IMAGE_DIR, upper_dir, work_dir);
-    if (mount("overlay", merged_dir, "overlay", 0, overlay_options) == -1) {
-        perror("[Parent] OverlayFS mount failed");
-        return -1;
-    }
-
-    // 精準安全投影 GCC 執行檔
-    printf("[Parent] Projecting minimal GCC toolchain into container...\n");
-    char *binaries[] = {"gcc", "as", "ld"};
-    for (int i = 0; i < 3; i++) {
-        snprintf(target, sizeof(target), "%s/usr/bin/%s", merged_dir, binaries[i]);
-        if (touch_file(target) != 0) return -1;
-        char host_bin[64];
-        snprintf(host_bin, sizeof(host_bin), "/usr/bin/%s", binaries[i]);
-        if (mount(host_bin, target, NULL, MS_BIND | MS_RDONLY, NULL) == -1) {
-            perror("[Parent] Mount GCC binary failed");
+    if (set_owner) {
+        if (chown(path, uid, gid) == -1) {
+            fprintf(stderr, "Failed to chown %s: ", path);
+            perror("");
             return -1;
         }
     }
+    return 0;
+}
 
-    // 投影系統標頭檔與類庫
-    snprintf(target, sizeof(target), "%s/usr/include", merged_dir);
-    if (mount("/usr/include", target, NULL, MS_BIND | MS_RDONLY, NULL) == -1) return -1;
+int prepare_rootfs(const char *job_id) {
+    sandbox_paths paths = {0}; 
+    build_paths(job_id, &paths);
 
-    char *lib_dirs[] = {"/lib", "/lib64", "/usr/lib"};
-    for (int i = 0; i < 3; i++) {
-        snprintf(target, sizeof(target), "%s%s", merged_dir, lib_dirs[i]);
-        if (mount(lib_dirs[i], target, NULL, MS_BIND | MS_RDONLY, NULL) == -1) return -1;
-    }
+    printf("[Parent] Preparing runtime for Job %s...\n", job_id);
 
-    // 資料注入 Volume Mount (已修復重複宣告與截斷問題)
-    snprintf(host_job_dir, sizeof(host_job_dir), "./sandbox/tmp/job_%s", job_id);
-    snprintf(container_app_dir, sizeof(container_app_dir), "%s/app", merged_dir);
-    mkdir_p(host_job_dir, 0755);
+    uid_t uid = get_real_uid();
+    gid_t gid = get_real_gid();
 
-    if (mount(host_job_dir, container_app_dir, NULL, MS_BIND, NULL) == -1) {
-        perror("[Parent] Volume mount bind failed");
+    if (prepare_dir(paths.runtime_dir, 0755, uid, gid, 0) == -1) return -1;
+    if (prepare_dir(paths.merged_dir,  0755, uid, gid, 0) == -1) return -1;
+
+    if (prepare_dir(paths.upper_dir,   0755, uid, gid, 1) == -1) return -1;
+    if (prepare_dir(paths.work_dir,    0755, uid, gid, 1) == -1) return -1;
+
+    if (prepare_dir(paths.host_res_dir, 0755, uid, gid, 1) == -1) return -1;
+    if (chmod(paths.host_res_dir, 0775) == -1) {
+        perror("chmod host_res_dir");
         return -1;
     }
 
-    printf("[Parent] Container filesystem stack for Job %s is perfectly ready!\n", job_id);
+    const char *global_res_dir = "./sandbox/result";
+    if (chown(global_res_dir, uid, gid) == -1) {
+        perror("chown global result dir");
+    }
+    if (chmod(global_res_dir, 0775) == -1) {
+        perror("chmod global result dir");
+    }
+
+    printf("[Parent] Runtime directories ready\n");
     return 0;
 }
 
@@ -197,6 +163,17 @@ int mount_overlayfs(const char *job_id){
         return -1;
     }
 
+    if(mkdir_p(paths.container_res_dir, 0755) == -1 && errno != EEXIST) {
+        perror("mkdir container_res_dir");
+        return -1;
+    }
+
+    
+    if(mount(paths.host_res_dir, paths.container_res_dir, NULL, MS_BIND | MS_REC, NULL) == -1){
+        perror("mount result bind");
+        return -1;
+    }
+
     printf("[Parent] OverlayFS mounted\n");
 
     return 0;
@@ -205,19 +182,12 @@ int mount_overlayfs(const char *job_id){
 void setup_pivot_root(const char *job_id){
 
     sandbox_paths paths;
-
     build_paths(job_id, &paths);
 
     printf(
         "[Sandbox] Executing pivot_root for Job %s...\n",
         job_id
     );
-
-    if(mkdir(paths.put_old, 0755) == -1 &&
-       errno != EEXIST){
-        perror("mkdir oldroot");
-        exit(1);
-    }
 
     if(mount(
         paths.merged_dir,
@@ -230,10 +200,19 @@ void setup_pivot_root(const char *job_id){
         exit(1);
     }
 
-    if(pivot_root_syscall(
-        paths.merged_dir,
-        paths.put_old
-    ) == -1){
+    if(chdir(paths.merged_dir) == -1){
+        perror("chdir merged_dir");
+        exit(1);
+    }
+
+    // ★ 在 child namespace 建立
+    if(mkdir(".oldroot", 0755) == -1 &&
+       errno != EEXIST){
+        perror("mkdir .oldroot");
+        exit(1);
+    }
+
+    if(pivot_root_syscall(".", "./.oldroot") == -1){
         perror("pivot_root");
         exit(1);
     }
@@ -241,21 +220,22 @@ void setup_pivot_root(const char *job_id){
     printf("[Sandbox] pivot_root success\n");
 
     if(chdir("/") == -1){
-        perror("chdir");
+        perror("chdir /");
         exit(1);
     }
 
-    if(mount("proc","/proc","proc", 0,NULL) == -1){
+    if(mount("proc", "/proc", "proc", 0, NULL) == -1){
         perror("mount proc");
         exit(1);
     }
 
-    if(mount(NULL,"/.oldroot",NULL,MS_PRIVATE | MS_REC,NULL) == -1){
+    if(mount(NULL, "/.oldroot", NULL,
+        MS_PRIVATE | MS_REC, NULL) == -1){
         perror("mount private oldroot");
         exit(1);
     }
 
-    if(umount2( "/.oldroot",MNT_DETACH) == -1){
+    if(umount2("/.oldroot", MNT_DETACH) == -1){
         perror("umount oldroot");
         exit(1);
     }

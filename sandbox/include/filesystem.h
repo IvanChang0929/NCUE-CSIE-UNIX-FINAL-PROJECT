@@ -3,6 +3,8 @@
 
 #define PATH_SIZE 1024
 
+#include <sys/types.h>
+
 typedef struct sandbox_paths {
     char runtime_dir[PATH_SIZE];
     char upper_dir[PATH_SIZE];
@@ -14,8 +16,14 @@ typedef struct sandbox_paths {
     char host_app_dir[PATH_SIZE];
     char container_app_dir[PATH_SIZE];
 
+    char host_res_dir[PATH_SIZE];
+    char container_res_dir[PATH_SIZE];
+
 } sandbox_paths;
 
+
+uid_t get_real_uid(void);
+gid_t get_real_gid(void);
 int prepare_rootfs(const char *job_id);
 int mount_secure_container(const char *job_id);
 int mount_overlayfs(const char *job_id);
