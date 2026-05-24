@@ -8,6 +8,10 @@
 #include <sys/mount.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <time.h>
+#include <sys/wait.h>
+#include <sys/resource.h>
+#include <signal.h>
 
 #include "limit.h"
 #include "namespace.h"
@@ -16,6 +20,8 @@
 #include "payload.h"
 #include "result_writer.h"
 
+
+#define TIME_LIMIT_SEC 5
 #define STACK_SIZE (1024 * 1024)
 
 typedef struct {
@@ -56,11 +62,11 @@ void prepare_test_source(const char *job_id){
     }
 
     fprintf(fp,
-        "#include <stdio.h>\n"
-        "#include <unistd.h>\n"
-        "#include <string.h>\n\n"
+        "#include <stdio.h>\n\n"
         "int main() {\n"
-        "    printf(\"Hello, sandbox!\\n\");\n"
+        "    while(1){\n"
+        "        printf(\"AAAAAAAAAAAAAAAAAAAA\\n\");\n"
+        "    }\n"
         "    return 0;\n"
         "}\n"
     );
@@ -130,58 +136,87 @@ int compile_child_func(void *arg){
 
 int execute_child_func(void *arg){
     ChildPipeArgs *pipes = (ChildPipeArgs *)arg;
+
     close(sync_pipe[1]);
     char buf;
-    if(read(sync_pipe[0], &buf, 1) == -1){ exit(1); }
+    if(read(sync_pipe[0], &buf, 1) == -1){
+        exit(1);
+    }
 
-    if (setgid(0) == -1) { perror("setgid failed"); exit(1); }
-    if (setuid(0) == -1) { perror("setuid failed"); exit(1); }
+    if(setgid(0) == -1){
+        perror("setgid failed");
+        exit(1);
+    }
+    if(setuid(0) == -1){
+        perror("setuid failed");
+        exit(1);
+    }
 
     setup_mount_namespace();
     setup_pivot_root(current_job_id);
     setup_resource_limits();
-    
-    redirect_execute_output(pipes->stderr_pipe);
-    close(pipes->stdout_pipe[0]); 
-    close(pipes->stdout_pipe[1]);
 
-    pid_t p = fork();
-    if (p < 0) 
-    {
-        perror("fork inside namespace failed");
+    pid_t pid2 = fork();
+    if(pid2 == -1){
+        perror("fork payload failed");
         exit(1);
     }
-    if (p == 0) {
+    if(pid2 == 0){
+        sigset_t mask;
+        sigemptyset(&mask);
+        if (sigprocmask(SIG_SETMASK, &mask, NULL) == -1) {
+            perror("sigprocmask failed");
+        }
+
+        for (int i = 1; i < NSIG; i++) {
+            signal(i, SIG_DFL);
+        }
+
+        redirect_execute_output(pipes->stderr_pipe);
+
+        for(int i = 3; i < 32; i++){
+            if(i != STDOUT_FILENO && i != STDERR_FILENO){
+                close(i);
+            }
+        }
+
         execute_program();
-        exit(1); 
-    }
-    
-    int status;
-    waitpid(p, &status, 0);
-    if (WIFEXITED(status)) {
+
+        perror("execute_program failed");
+        exit(1);
+
+    }else{
+        close(pipes->stdout_pipe[0]);
+        close(pipes->stdout_pipe[1]);
+        close(pipes->stderr_pipe[0]);
+        close(pipes->stderr_pipe[1]);
+
+        int status;
+        
+        if(waitpid(pid2, &status, 0) == -1){
+            perror("waitpid in init");
+            exit(1);
+        }
+
+        if(WIFSIGNALED(status)){
+            exit(128 + WTERMSIG(status));
+        }
+        
+        // 若為正常結束，直接回傳 PID 2 的退出碼
         exit(WEXITSTATUS(status));
-    } else if (WIFSIGNALED(status)) {
-        // 若 PID 2 被 Signal 25 殺死，這裡會以 128+25 = 153 退出
-        exit(128 + WTERMSIG(status));
     }
-    
-    exit(1);
 }
 
-int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, StageResult *res){
+int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, StageResult *res) {
     res->executed = 1;
-    
-    // 將 Pipe 宣告為區域變數，確保 Compile 和 Execute 階段的生命週期完全獨立
-    ChildPipeArgs pipes; 
-    
+    ChildPipeArgs pipes;
+
     if (pipe(sync_pipe) == -1 || pipe(pipes.stdout_pipe) == -1 || pipe(pipes.stderr_pipe) == -1) {
         perror("pipe creation failed");
         return -1;
     }
 
     int clone_flags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET | CLONE_NEWUSER | SIGCHLD;
-    
-    // 關鍵修改：將區域變數 pipes 的指標作為參數傳入 clone，讓子進程抓到正確的 FD
     pid_t pid = clone(child_func, child_stack + STACK_SIZE, clone_flags, &pipes);
 
     if (pid == -1) {
@@ -189,9 +224,9 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
         return -1;
     }
 
-    close(sync_pipe[0]);    // 父進程不讀同步訊號
-    close(pipes.stdout_pipe[1]);  // 父進程不寫標準輸出
-    close(pipes.stderr_pipe[1]);  // 父進程不寫標準錯誤
+    close(sync_pipe[0]);
+    close(pipes.stdout_pipe[1]);
+    close(pipes.stderr_pipe[1]);
 
     setup_uid_gid_map(pid);
     setup_cgroup(pid);
@@ -202,86 +237,201 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
     }
     close(sync_pipe[1]);
 
-    // 設置為非阻塞模式
     fcntl(pipes.stdout_pipe[0], F_SETFL, fcntl(pipes.stdout_pipe[0], F_GETFL) | O_NONBLOCK);
     fcntl(pipes.stderr_pipe[0], F_SETFL, fcntl(pipes.stderr_pipe[0], F_GETFL) | O_NONBLOCK);
 
-    int status;
+    int status = 0;
     size_t out_total = 0;
     size_t err_total = 0;
     ssize_t n;
+    
+    // ▼ 新增：用來記錄是否因為超時而被外層砍掉
+    int is_timeout = 0; 
+
+    struct rusage usage; 
+    memset(&usage, 0, sizeof(usage));
+
+    struct timespec start, now;
+    clock_gettime(CLOCK_MONOTONIC, &start);
 
     while (1) {
-        // 嘗試讀取 stdout (在 execute 階段一讀就會是 0 或者是 EAGAIN，因為已經導向檔案了)
         while (out_total < sizeof(res->stdout_buf) - 1) {
             n = read(pipes.stdout_pipe[0], res->stdout_buf + out_total, sizeof(res->stdout_buf) - out_total - 1);
             if (n > 0) out_total += n;
             else break; 
         }
 
-        // 嘗試讀取 stderr (用來抓 Runtime 崩潰訊息)
         while (err_total < sizeof(res->stderr_buf) - 1) {
             n = read(pipes.stderr_pipe[0], res->stderr_buf + err_total, sizeof(res->stderr_buf) - err_total - 1);
             if (n > 0) err_total += n;
-            else break; 
+            else break;
         }
 
-        // 檢查子進程狀態
-        pid_t ret = waitpid(pid, &status, WNOHANG);
-        if (ret == pid) {
-            break; // 子進程乾脆地結束了，跳出大迴圈！
-        }
+        pid_t ret = wait4(pid, &status, WNOHANG, &usage);
+        if (ret == pid) break; 
         if (ret == -1) {
-            if (errno == EINTR) continue; 
-            perror("waitpid");
+            if (errno == EINTR) continue;
+            perror("wait4");
             return -1;
         }
 
-        // 保持 0.01 秒的睡眠，防止極速空轉，同時給核心足夠的反應時間
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double elapsed = (now.tv_sec - start.tv_sec) + (now.tv_nsec - start.tv_nsec) / 1e9;
+
+        if (elapsed > TIME_LIMIT_SEC) {
+            fprintf(stderr, "\n[Parent] Time Limit Exceeded (Wall-clock timeout)\n");
+            kill(pid, SIGKILL); 
+            
+            // ▼ 標記超時發生
+            is_timeout = 1; 
+            
+            wait4(pid, &status, 0, &usage);
+            break;
+        }
+
         usleep(10000); 
     }
 
-    // 子進程結束後，做最後一輪殘留資料排空 (將 Pipe 內剩餘的資料抽乾)
+    // 收尾：讀取剩下的輸出
     while (out_total < sizeof(res->stdout_buf) - 1) {
         n = read(pipes.stdout_pipe[0], res->stdout_buf + out_total, sizeof(res->stdout_buf) - out_total - 1);
         if (n > 0) out_total += n;
         else break;
     }
+
     while (err_total < sizeof(res->stderr_buf) - 1) {
         n = read(pipes.stderr_pipe[0], res->stderr_buf + err_total, sizeof(res->stderr_buf) - err_total - 1);
         if (n > 0) err_total += n;
         else break;
     }
 
-    // 確保字串安全結尾
     res->stdout_buf[out_total] = '\0';
     res->stderr_buf[err_total] = '\0';
-
-    // 關鍵修改：當前階段結束，立刻乾淨關閉讀取端，杜絕 FD 殘留洩漏！
     close(pipes.stdout_pipe[0]);
     close(pipes.stderr_pipe[0]);
 
-    // 解析退出狀態
-    // === 替換原本的 status 判斷邏輯 ===
-    fprintf(stderr, "\n========================================\n");
-    fprintf(stderr, "[Parent DEBUG] 子進程 waitpid 原始狀態碼 status = %d\n", status);
+    long user_ms = (usage.ru_utime.tv_sec * 1000) + (usage.ru_utime.tv_usec / 1000);
+    long sys_ms  = (usage.ru_stime.tv_sec * 1000) + (usage.ru_stime.tv_usec / 1000);
     
-    if (WIFEXITED(status)) {
-        fprintf(stderr, "[Parent DEBUG] 判定結果：子進程是【自己結束】的 (Normal Exit)\n");
-        fprintf(stderr, "[Parent DEBUG] 實際的 Exit Code = %d\n", WEXITSTATUS(status));
-        res->exit_code = WEXITSTATUS(status);
-    } else if (WIFSIGNALED(status)) {
-        fprintf(stderr, "[Parent DEBUG] 判定結果：子進程是被【核心信號轟殺】的 (Signaled)\n");
-        fprintf(stderr, "[Parent DEBUG] 殺死它的 Signal 數字 = %d\n", WTERMSIG(status));
-        res->exit_code = 128 + WTERMSIG(status);
-    } else {
+    res->time_ms = user_ms + sys_ms;  
+    res->memory_kb = usage.ru_maxrss; 
+
+    fprintf(stderr, "\n========================================\n");
+    fprintf(stderr, "[Parent DEBUG] 子進程 wait4 原始狀態碼 status = %d\n", status);
+    fprintf(stderr, "[Parent DEBUG] 消耗時間: %ld ms, 記憶體: %ld KB\n", res->time_ms, res->memory_kb);
+
+    if(WIFEXITED(status)){
+        int ext_code = WEXITSTATUS(status);
+        
+        if (ext_code > 128) {
+            int sig = ext_code - 128;
+            fprintf(stderr, "[Parent DEBUG] 判定結果：被 PID 1 代理回報信號轟殺 (Translated Signal)\n");
+            fprintf(stderr, "[Parent DEBUG] 殺死 PID 2 的 Signal 數字 = %d\n", sig);
+
+            if(sig == SIGXFSZ){
+                fprintf(stderr, "[Parent] Output Limit Exceeded (SIGXFSZ)\n");
+                res->exit_code = 153;
+                snprintf(res->status_message, sizeof(res->status_message), "Output Limit Exceeded (SIGXFSZ)");
+            }
+            else if(sig == SIGKILL){
+                fprintf(stderr, "[Parent] Process Killed (SIGKILL)\n");
+                res->exit_code = 137;
+                snprintf(res->status_message, sizeof(res->status_message), "Process Killed (SIGKILL)");
+            }
+            else if(sig == SIGSEGV){
+                fprintf(stderr, "[Parent] Segmentation Fault\n");
+                res->exit_code = 139;
+                snprintf(res->status_message, sizeof(res->status_message), "Segmentation Fault");
+            }
+            else if(sig == SIGFPE){
+                fprintf(stderr, "[Parent] Floating Point Exception\n");
+                res->exit_code = 136;
+                snprintf(res->status_message, sizeof(res->status_message), "Floating Point Exception");
+            }
+            else if(sig == SIGABRT){
+                fprintf(stderr, "[Parent] Abort Signal\n");
+                res->exit_code = 134;
+                snprintf(res->status_message, sizeof(res->status_message), "Abort Signal");
+            }
+            else if(sig == SIGSYS){
+                fprintf(stderr, "[Parent] Seccomp Blocked Syscall\n");
+                res->exit_code = 159;
+                snprintf(res->status_message, sizeof(res->status_message), "Seccomp Blocked Syscall");
+            }
+            else{
+                res->exit_code = 128 + sig;
+                snprintf(res->status_message, sizeof(res->status_message), "Killed by Signal %d", sig);
+            }
+        }else{
+            fprintf(stderr, "[Parent DEBUG] 判定結果：子進程是【自己結束】的 (Normal Exit)\n");
+            fprintf(stderr, "[Parent DEBUG] 實際的 Exit Code = %d\n", ext_code);
+            res->exit_code = ext_code;
+        }
+    } else if(WIFSIGNALED(status)){
+
+        int sig = WTERMSIG(status);
+
+        fprintf(stderr,
+            "[Parent DEBUG] 判定結果：子進程是被【核心信號轟殺】的 (Signaled)\n");
+
+        fprintf(stderr,
+            "[Parent DEBUG] 殺死它的 Signal 數字 = %d\n",
+            sig);
+
+        // ==============================
+        // ▼ 針對 Timeout 被外層殺死，或者是 OOM 觸發的精準特判
+        // ==============================
+
+        if(sig == SIGXFSZ){
+            fprintf(stderr, "[Parent] Output Limit Exceeded (SIGXFSZ)\n");
+            res->exit_code = 153;
+            snprintf(res->status_message, sizeof(res->status_message), "Output Limit Exceeded (SIGXFSZ)");
+        }
+        else if(sig == SIGKILL){
+            // ▼ 透過旗標分流：時間超時 (TLE) 或是 記憶體爆掉 (MLE/OOM)
+            if (is_timeout) {
+                fprintf(stderr, "[Parent] Time Limit Exceeded (TLE)\n");
+                res->exit_code = 137;
+                snprintf(res->status_message, sizeof(res->status_message), "Time Limit Exceeded (TLE)");
+            } else {
+                fprintf(stderr, "[Parent] Process Killed (OOM / MLE)\n");
+                res->exit_code = 137;
+                snprintf(res->status_message, sizeof(res->status_message), "Process Killed (OOM / MLE)");
+            }
+        }
+        else if(sig == SIGSEGV){
+            fprintf(stderr, "[Parent] Segmentation Fault\n");
+            res->exit_code = 139;
+            snprintf(res->status_message, sizeof(res->status_message), "Segmentation Fault");
+        }
+        else if(sig == SIGFPE){
+            fprintf(stderr, "[Parent] Floating Point Exception\n");
+            res->exit_code = 136;
+            snprintf(res->status_message, sizeof(res->status_message), "Floating Point Exception");
+        }
+        else if(sig == SIGABRT){
+            fprintf(stderr, "[Parent] Abort Signal\n");
+            res->exit_code = 134;
+            snprintf(res->status_message, sizeof(res->status_message), "Abort Signal");
+        }
+        else if(sig == SIGSYS){
+            fprintf(stderr, "[Parent] Seccomp Blocked Syscall\n");
+            res->exit_code = 159;
+            snprintf(res->status_message, sizeof(res->status_message), "Seccomp Blocked Syscall");
+        }
+        else{
+            res->exit_code = 128 + sig;
+            snprintf(res->status_message, sizeof(res->status_message), "Killed by Signal %d", sig);
+        }
+    }
+    else {
         fprintf(stderr, "[Parent DEBUG] 子進程處於奇特狀態\n");
         res->exit_code = -1;
     }
     fprintf(stderr, "========================================\n\n");
 
-    if (res->stdout_buf[0] != '\0') { fprintf(stderr, "%s", res->stdout_buf); }
-    if (res->stderr_buf[0] != '\0') { fprintf(stderr, "%s", res->stderr_buf); }
+    if (res->stdout_buf[0] != '\0') fprintf(stderr, "%s", res->stdout_buf);
+    if (res->stderr_buf[0] != '\0') fprintf(stderr, "%s", res->stderr_buf);
 
     return status;
 }
@@ -303,7 +453,7 @@ int main(int argc, char *argv[]){
         fprintf(stderr, "[Parent] Rootfs preparation failed\n");
         return EXIT_FAILURE;
     }
-    //prepare_test_source(current_job_id);
+    prepare_test_source(current_job_id);
     if(mount_overlayfs(current_job_id) != 0){
         return EXIT_FAILURE;
     }
