@@ -12,7 +12,7 @@
 #include <sys/wait.h>
 #include <sys/resource.h>
 #include <signal.h>
-#include <prctl.h>
+#include <sys/prctl.h>
 
 #include "limit.h"
 #include "namespace.h"
@@ -33,6 +33,10 @@ typedef struct {
 
 static char child_stack[STACK_SIZE];
 static int sync_pipe[2];
+
+static double current_cpu_core = 1.0;
+static long current_memory_mb = 256;
+static int current_timeout_sec = 10;
 char *current_job_id = NULL;
 char *current_language = NULL;
 
@@ -130,7 +134,7 @@ int compile_child_func(void *arg){
 
     setup_mount_namespace();
     setup_pivot_root(current_job_id);
-    setup_resource_limits();
+    setup_resource_limits(current_memory_mb, current_timeout_sec);
     setup_seccomp();
     redirect_compile_output(pipes->stdout_pipe, pipes->stderr_pipe);
     if(compile_program() != 0){ exit(1); }
@@ -157,7 +161,7 @@ int execute_child_func(void *arg){
 
     setup_mount_namespace();
     setup_pivot_root(current_job_id);
-    setup_resource_limits();
+    setup_resource_limits(current_memory_mb, current_timeout_sec);
 
     pid_t pid2 = fork();
     if(pid2 == -1){
@@ -214,6 +218,43 @@ int execute_child_func(void *arg){
     }
 }
 
+static void write_monitor_sample(
+    const char *job_id,
+    const char *stage_name,
+    long elapsed_ms,
+    long memory_kb,
+    double cpu_percent,
+    const char *status
+) {
+    char path[512];
+
+    snprintf(
+        path,
+        sizeof(path),
+        "./sandbox/result/job_%s/monitor.log",
+        job_id
+    );
+
+    FILE *fp = fopen(path, "a");
+    if (fp == NULL) {
+        return;
+    }
+
+    fprintf(
+        fp,
+        "{\"job_id\":\"%s\",\"stage\":\"%s\",\"elapsed_ms\":%ld,"
+        "\"memory_kb\":%ld,\"cpu_percent\":%.2f,\"status\":\"%s\"}\n",
+        job_id,
+        stage_name,
+        elapsed_ms,
+        memory_kb,
+        cpu_percent,
+        status
+    );
+
+    fclose(fp);
+}
+
 int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, StageResult *res) {
     res->executed = 1;
     ChildPipeArgs pipes;
@@ -236,7 +277,7 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
     close(pipes.stderr_pipe[1]);
 
     setup_uid_gid_map(pid);
-    setup_cgroup(pid);
+    setup_cgroup(pid, current_job_id, current_cpu_core, current_memory_mb);
 
     if (write(sync_pipe[1], "x", 1) == -1) {
         perror("write sync_pipe");
@@ -259,6 +300,11 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
 
     struct timespec start, now;
     clock_gettime(CLOCK_MONOTONIC, &start);
+
+    long last_monitor_ms = 0;
+    long last_cpu_usage_usec = read_cgroup_cpu_usage_usec(current_job_id);
+    long last_cpu_sample_ms = 0;
+    long final_elapsed_ms = 0;
 
     while (1) {
         while (out_total < sizeof(res->stdout_buf) - 1) {
@@ -284,7 +330,53 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
         clock_gettime(CLOCK_MONOTONIC, &now);
         double elapsed = (now.tv_sec - start.tv_sec) + (now.tv_nsec - start.tv_nsec) / 1e9;
 
-        if (elapsed > TIME_LIMIT_SEC) {
+        long elapsed_ms = (long)(elapsed * 1000);
+        final_elapsed_ms = elapsed_ms;
+
+        if (elapsed_ms - last_monitor_ms >= 200) {
+            long memory_kb = read_cgroup_memory_current_kb(current_job_id);
+            long cpu_usage_usec = read_cgroup_cpu_usage_usec(current_job_id);
+
+            double cpu_percent = 0.0;
+            long delta_time_ms = elapsed_ms - last_cpu_sample_ms;
+
+            if (
+                cpu_usage_usec >= 0 &&
+                last_cpu_usage_usec >= 0 &&
+                delta_time_ms > 0 &&
+                current_cpu_core > 0
+            ) {
+                long delta_cpu_usec = cpu_usage_usec - last_cpu_usage_usec;
+
+                cpu_percent =
+                    ((double)delta_cpu_usec / ((double)delta_time_ms * 1000.0))
+                    / current_cpu_core
+                    * 100.0;
+            }
+
+            if (cpu_percent < 0) {
+                cpu_percent = 0;
+            }
+
+            if (cpu_percent > 100) {
+                cpu_percent = 100;
+            }
+
+            write_monitor_sample(
+                current_job_id,
+                stage_name,
+                elapsed_ms,
+                memory_kb,
+                cpu_percent,
+                "running"
+            );
+
+            last_monitor_ms = elapsed_ms;
+            last_cpu_sample_ms = elapsed_ms;
+            last_cpu_usage_usec = cpu_usage_usec;
+        }
+
+        if (elapsed > current_timeout_sec) {
             fprintf(stderr, "\n[Parent] Time Limit Exceeded (Wall-clock timeout)\n");
             kill(pid, SIGKILL); 
             is_timeout = 1; 
@@ -321,6 +413,14 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
     res->time_ms = user_ms + sys_ms;  
     res->memory_kb = usage.ru_maxrss; 
 
+    write_monitor_sample(
+        current_job_id,
+        stage_name,
+        final_elapsed_ms,
+        res->memory_kb,
+        0.0,
+        "done"
+    );
     fprintf(stderr, "\n========================================\n");
     fprintf(stderr, "[Parent DEBUG] 子進程 wait4 原始狀態碼 status = %d\n", status);
     fprintf(stderr, "[Parent DEBUG] 消耗時間: %ld ms, 記憶體: %ld KB\n", res->time_ms, res->memory_kb);
@@ -374,9 +474,25 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
             fprintf(stderr, "[Parent DEBUG] 實際的 Exit Code = %d\n", ext_code);
             
             if (ext_code != 0) {
-                snprintf(res->status_message, sizeof(res->status_message), "Compile Error");
+                if (strcmp(stage_name, "compile") == 0) {
+                    snprintf(
+                        res->status_message,
+                        sizeof(res->status_message),
+                        "Compile Error"
+                    );
+                } else {
+                    snprintf(
+                        res->status_message,
+                        sizeof(res->status_message),
+                        "Runtime Error"
+                    );
+                }
             } else {
-                snprintf(res->status_message, sizeof(res->status_message), "Success");
+                snprintf(
+                    res->status_message,
+                    sizeof(res->status_message),
+                    "Success"
+                );
             }
         }
     } else if(WIFSIGNALED(status)){
@@ -434,44 +550,87 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
     fprintf(stderr, "========================================\n\n");
 
     // 這裡會把編譯期拿到的錯誤訊息直接倒回終端機，讓 Python Worker 端可以即時收到並顯示
-    if (res->stdout_buf[0] != '\0') fprintf(stderr, "%s", res->stdout_buf);
-    if (res->stderr_buf[0] != '\0') fprintf(stderr, "%s", res->stderr_buf);
+    //if (res->stdout_buf[0] != '\0') fprintf(stderr, "%s", res->stdout_buf);
+    //if (res->stderr_buf[0] != '\0') fprintf(stderr, "%s", res->stderr_buf);
 
     return status;
 }
 
 int main(int argc, char *argv[]){
-    if(argc != 3){
-        fprintf(stderr, "Usage: %s <job_id> <language>\n", argv[0]);
+    if(argc != 6){
+        fprintf(
+            stderr,
+            "Usage: %s <job_id> <language> <cpu_core> <memory_mb> <timeout_sec>\n",
+            argv[0]
+        );
         return EXIT_FAILURE;
     }
 
     current_job_id = argv[1];
     current_language = argv[2];
+
+    current_cpu_core = atof(argv[3]);
+    current_memory_mb = atol(argv[4]);
+    current_timeout_sec = atoi(argv[5]);
+
+    if(current_cpu_core <= 0){
+        current_cpu_core = 1.0;
+    }
+
+    if(current_memory_mb <= 0){
+        current_memory_mb = 256;
+    }
+
+    if(current_timeout_sec <= 0){
+        current_timeout_sec = 10;
+    }
+
     StageResult comp_res = {0};
     StageResult exec_res = {0};
 
     fprintf(stderr, "\n========== Sandbox ==========\n");
     fprintf(stderr, "[Parent] Managing Job ID: %s\n", current_job_id);
+    fprintf(stderr, "[Parent] Language: %s\n", current_language);
+    fprintf(
+        stderr,
+        "[Parent] Limit: CPU %.2f core, Memory %ld MB, Timeout %d sec\n",
+        current_cpu_core,
+        current_memory_mb,
+        current_timeout_sec
+    );
 
     if(prepare_rootfs(current_job_id) != 0){
         fprintf(stderr, "[Parent] Rootfs preparation failed\n");
         return EXIT_FAILURE;
     }
+
     prepare_test_source(current_job_id);
-    if(mount_overlayfs(current_job_id,current_language) != 0){
+
+    if(mount_overlayfs(current_job_id, current_language) != 0){
         return EXIT_FAILURE;
     }
 
-    int compile_status = run_sandboxed_stage(compile_child_func, "compile", &comp_res);
-    if(compile_status == -1 || !WIFEXITED(compile_status) || WEXITSTATUS(compile_status) != 0){
+    int compile_status = run_sandboxed_stage(
+        compile_child_func,
+        "compile",
+        &comp_res
+    );
+
+    if(
+        compile_status == -1 ||
+        !WIFEXITED(compile_status) ||
+        WEXITSTATUS(compile_status) != 0
+    ){
         fprintf(stderr, "[Parent] Compile stage failed\n");
         write_combined_json(current_job_id, &comp_res, &exec_res);
         cleanup_container_filesystem(current_job_id);
         return EXIT_FAILURE;
     }
 
-    fprintf(stderr, "-------------------------------- Compile stage finished ----------------------------------\n");
+    fprintf(
+        stderr,
+        "-------------------------------- Compile stage finished ----------------------------------\n"
+    );
 
     int exec_status = run_sandboxed_stage(execute_child_func, "execute", &exec_res);
 
@@ -490,11 +649,11 @@ int main(int argc, char *argv[]){
 
     print_sandbox_result(exec_status);
     cleanup_container_filesystem(current_job_id);
+
     fprintf(stderr, "[Parent] All stages completed successfully.\n");
-    
+
     return EXIT_SUCCESS;
 }
-
 /*
 char *exec_args[] = {"/bin/sh",NULL};
 execve("/bin/sh",exec_args,environ);

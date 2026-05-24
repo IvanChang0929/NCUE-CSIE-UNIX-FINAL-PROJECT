@@ -20,8 +20,7 @@
 #define NOFILE_LIMIT       32
 #define FILESIZE_LIMIT     (1 * 1024 * 1024)
 
-
-#define CGROUP_PATH "/sys/fs/cgroup/sandbox"
+#define CGROUP_BASE_PATH "/sys/fs/cgroup"
 
 static void set_limit(int resource, rlim_t soft,rlim_t hard){
     struct rlimit rl = {soft, hard};
@@ -31,20 +30,27 @@ static void set_limit(int resource, rlim_t soft,rlim_t hard){
     }
 }
 
-static void write_cgroup_file(const char *name,const char *value){
+static void build_cgroup_path(const char *job_id, char *path, size_t size)
+{
+    snprintf(path, size, "%s/sandbox_job_%s", CGROUP_BASE_PATH, job_id);
+}
 
-    char path[256];
+static void write_cgroup_file(const char *job_id, const char *name, const char *value)
+{
+    char cgroup_path[256];
+    char path[512];
 
-    snprintf(path,sizeof(path),"%s/%s",CGROUP_PATH,name);
+    build_cgroup_path(job_id, cgroup_path, sizeof(cgroup_path));
+    snprintf(path, sizeof(path), "%s/%s", cgroup_path, name);
 
     int fd = open(path, O_WRONLY);
 
-    if(fd == -1){
+    if (fd == -1) {
         perror(path);
         exit(1);
     }
 
-    if(write(fd, value, strlen(value)) == -1){
+    if (write(fd, value, strlen(value)) == -1) {
         perror("write");
         close(fd);
         exit(1);
@@ -53,46 +59,72 @@ static void write_cgroup_file(const char *name,const char *value){
     close(fd);
 }
 
-void setup_resource_limits(){
+void setup_resource_limits(long memory_mb, int timeout_sec)
+{
+    rlim_t memory_bytes = (rlim_t)memory_mb * 1024 * 1024;
 
-    // CPU time limit
-    set_limit(RLIMIT_CPU,CPU_LIMIT,CPU_LIMIT+1);
+    // CPU time limit，這裡用 timeout 當 CPU time 的保護線
+    set_limit(RLIMIT_CPU, timeout_sec, timeout_sec + 1);
 
     // Virtual memory limit
-    set_limit(RLIMIT_AS,MEMORY_LIMIT,MEMORY_LIMIT);
+    set_limit(RLIMIT_AS, memory_bytes, memory_bytes);
 
     // File descriptor limit
-    set_limit(RLIMIT_NOFILE,NOFILE_LIMIT,NOFILE_LIMIT);
+    set_limit(RLIMIT_NOFILE, NOFILE_LIMIT, NOFILE_LIMIT);
 
-    set_limit(RLIMIT_NPROC,NPROC_LIMIT,NPROC_LIMIT);
+    // Process limit
+    set_limit(RLIMIT_NPROC, NPROC_LIMIT, NPROC_LIMIT);
 
-    set_limit(RLIMIT_FSIZE,FILESIZE_LIMIT,FILESIZE_LIMIT);
+    // Output file size limit
+    set_limit(RLIMIT_FSIZE, FILESIZE_LIMIT, FILESIZE_LIMIT);
 
     printf("[Sandbox] Resource limits applied\n");
 }
 
-void setup_cgroup(pid_t pid){
+static void build_cpu_max_value(double cpu_core, char *buffer, size_t size)
+{
+    long period = 100000;
+    long quota = (long)(cpu_core * period);
 
+    if (quota < 1000) {
+        quota = 1000;
+    }
+
+    snprintf(buffer, size, "%ld %ld", quota, period);
+}
+
+void setup_cgroup(pid_t pid, const char *job_id, double cpu_core, long memory_mb)
+{
     char pid_str[32];
+    char cgroup_path[256];
+    char cpu_max_value[64];
+    char memory_max_value[64];
 
-    if(mkdir(CGROUP_PATH, 0755) == -1){
-        if(errno != EEXIST){
-            perror("mkdir cgroup");
+    build_cgroup_path(job_id, cgroup_path, sizeof(cgroup_path));
+
+    if (mkdir(cgroup_path, 0755) == -1) {
+        if (errno != EEXIST) {
+            perror("mkdir job cgroup");
             exit(1);
         }
     }
 
-    write_cgroup_file("cpu.max","50000 100000");
+    build_cpu_max_value(cpu_core, cpu_max_value, sizeof(cpu_max_value));
+    snprintf(memory_max_value, sizeof(memory_max_value), "%ld", memory_mb * 1024 * 1024);
 
-    write_cgroup_file("memory.max","536870912");
+    write_cgroup_file(job_id, "cpu.max", cpu_max_value);
+    write_cgroup_file(job_id, "memory.max", memory_max_value);
+    write_cgroup_file(job_id, "pids.max", "64");
 
-    write_cgroup_file("pids.max","64");
+    snprintf(pid_str, sizeof(pid_str), "%d", pid);
+    write_cgroup_file(job_id, "cgroup.procs", pid_str);
 
-    snprintf(pid_str,sizeof(pid_str),"%d",pid);
-
-    write_cgroup_file("cgroup.procs",pid_str);
-
-    printf("[Parent] cgroup configured\n");
+    printf(
+        "[Parent] cgroup configured for Job %s: CPU %.2f core, Memory %ld MB\n",
+        job_id,
+        cpu_core,
+        memory_mb
+    );
 }
 
 void print_resource_usage(void){
@@ -185,4 +217,56 @@ void print_sandbox_result(int status){
     }
 
     print_resource_usage();
+}
+
+long read_cgroup_memory_current_kb(const char *job_id)
+{
+    char cgroup_path[256];
+    char memory_path[512];
+
+    build_cgroup_path(job_id, cgroup_path, sizeof(cgroup_path));
+    snprintf(memory_path, sizeof(memory_path), "%s/memory.current", cgroup_path);
+
+    FILE *fp = fopen(memory_path, "r");
+    if (fp == NULL) {
+        return -1;
+    }
+
+    long bytes = 0;
+
+    if (fscanf(fp, "%ld", &bytes) != 1) {
+        fclose(fp);
+        return -1;
+    }
+
+    fclose(fp);
+
+    return bytes / 1024;
+}
+
+long read_cgroup_cpu_usage_usec(const char *job_id)
+{
+    char cgroup_path[256];
+    char cpu_path[512];
+
+    build_cgroup_path(job_id, cgroup_path, sizeof(cgroup_path));
+    snprintf(cpu_path, sizeof(cpu_path), "%s/cpu.stat", cgroup_path);
+
+    FILE *fp = fopen(cpu_path, "r");
+    if (fp == NULL) {
+        return -1;
+    }
+
+    char key[64];
+    long value;
+
+    while (fscanf(fp, "%63s %ld", key, &value) == 2) {
+        if (strcmp(key, "usage_usec") == 0) {
+            fclose(fp);
+            return value;
+        }
+    }
+
+    fclose(fp);
+    return -1;
 }

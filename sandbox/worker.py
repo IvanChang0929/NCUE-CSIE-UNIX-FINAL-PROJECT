@@ -44,48 +44,56 @@ def get_language_config(language):
     return runtimes[language]
 
 
-def run_job_with_sandbox(job_id, language):
+def run_job_with_sandbox(job_id, language, cpu, memory, timeout):
     result_dir = Path(f"./sandbox/result/job_{job_id}")
+
     try:
         result = subprocess.run(
             [
                 "sudo",
                 "./sandbox/build/sandbox",
                 str(job_id),
-                language
+                str(language),
+                str(cpu),
+                str(memory),
+                str(timeout),
             ],
-            capture_output=True,  # 攔截了沙箱所有的 printf 與 fprintf
+            capture_output=True,
             text=True
         )
-        
+
         result_json_path = result_dir / "result.json"
 
         if result_json_path.exists():
             with open(result_json_path, "r") as f:
                 sandbox_result = json.load(f)
-                
-            if "compile" in sandbox_result:
-                if not sandbox_result["compile"].get("stderr", "").strip() and result.stderr.strip():
-                    sandbox_result["compile"]["stderr"] = result.stderr
-        else:
-            sandbox_result = {
-                "error": "Sandbox crashed before generating result",
-                "system_stderr": result.stderr,
-                "exit_code": result.returncode
-            }
-            
+
+            # 重點：
+            # 不要把 result.stderr 塞進 compile.stderr。
+            # result.stderr 是 sandbox parent/debug log，不一定是使用者程式錯誤。
+            return sandbox_result
+
+        # 沒有 result.json 才代表 sandbox 系統層可能真的壞掉
+        sandbox_result = {
+            "error": "Sandbox crashed before generating result",
+            "system_stderr": result.stderr,
+            "exit_code": result.returncode
+        }
+
     except subprocess.TimeoutExpired:
         sandbox_result = {
             "error": "Sandbox Timeout",
             "execute": {
-                "exit_code": -1
+                "exit_code": -1,
+                "status_message": "Sandbox Timeout"
             }
         }
+
     finally:
+        time.sleep(3)
         if result_dir.exists():
             shutil.rmtree(result_dir)
-            pass
-            
+
     return sandbox_result
 
 
@@ -94,6 +102,9 @@ def process_job(job):
     job_id = job["id"]
     code = job["code"]
     language = job["language"]
+    cpu = job.get("cpu", 1.0)
+    memory = job.get("memory", 256)
+    timeout = job.get("timeout", 10)
 
     runtime = get_language_config(language)
 
@@ -123,11 +134,13 @@ def process_job(job):
 
     print_job_step("Source",source_file) 
 
+    print_job_step("Limit", f"{cpu} core / {memory} MB / {timeout} s")
+
     update_job_status(job_id, "running")
 
     print_job_step("API","status -> running")
 
-    result = run_job_with_sandbox(job_id,language)
+    result = run_job_with_sandbox(job_id, language, cpu, memory, timeout)
 
     print(f"[Worker] Job {job_id} Sandbox Execution Finished.")
 

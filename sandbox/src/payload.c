@@ -11,31 +11,26 @@ extern char *current_language;
 
 int compile_program(void){
     if(strcmp(current_language, "c") == 0){
-        fprintf(stderr,
-            "[Sandbox] Compiling C program...\n");
+        printf("[Sandbox] Compiling C program...\n");
         int status = system(
             "gcc /app/main.c -o /app/user_program"
         );
 
         if(status != 0){
-            fprintf(stderr,
-                "[Sandbox] Compilation failed\n");
+            printf("[Sandbox] Compilation failed\n");
 
             return -1;
         }
 
-        fprintf(stderr,
-            "[Sandbox] Compilation successful\n");
+        printf("[Sandbox] Compilation successful\n");
 
         return 0;
     }else if(strcmp(current_language, "python") == 0){
-        fprintf(stderr,
-            "[Sandbox] Python does not require compilation\n");
+        printf("[Sandbox] Python does not require compilation\n");
 
         return 0;
     }
-    fprintf(stderr,
-        "[Sandbox] Unsupported language: %s\n",
+    printf("[Sandbox] Unsupported language: %s\n",
         current_language
     );
 
@@ -44,13 +39,11 @@ int compile_program(void){
 
 void execute_program(void){
 
-    fprintf(stderr,
-        "[Sandbox] Dropping privileges...\n");
+    printf("[Sandbox] Dropping privileges...\n");
 
     setup_seccomp();
 
-    fprintf(stderr,
-        "[Sandbox] Executing user program...\n");
+    printf("[Sandbox] Executing user program...\n");
 
     if(strcmp(current_language, "c") == 0){
 
