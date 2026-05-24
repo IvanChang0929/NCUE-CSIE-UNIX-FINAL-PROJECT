@@ -31,7 +31,8 @@ typedef struct {
 
 static char child_stack[STACK_SIZE];
 static int sync_pipe[2];
-static char *current_job_id = NULL;
+char *current_job_id = NULL;
+char *current_language = NULL;
 
 void prepare_test_source(const char *job_id){
     char app_dir[512];
@@ -179,6 +180,9 @@ int execute_child_func(void *arg){
                 close(i);
             }
         }
+
+        if (setgid(1000) == -1) { perror("setgid failed"); exit(1); }
+        if (setuid(1000) == -1) { perror("setuid failed"); exit(1); }
 
         execute_program();
 
@@ -437,12 +441,13 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
 }
 
 int main(int argc, char *argv[]){
-    if(argc != 2){
-        fprintf(stderr, "Usage: %s <job_id>\n", argv[0]);
+    if(argc != 3){
+        fprintf(stderr, "Usage: %s <job_id> <language>\n", argv[0]);
         return EXIT_FAILURE;
     }
 
     current_job_id = argv[1];
+    current_language = argv[2];
     StageResult comp_res = {0};
     StageResult exec_res = {0};
 
@@ -454,7 +459,7 @@ int main(int argc, char *argv[]){
         return EXIT_FAILURE;
     }
     prepare_test_source(current_job_id);
-    if(mount_overlayfs(current_job_id) != 0){
+    if(mount_overlayfs(current_job_id,current_language) != 0){
         return EXIT_FAILURE;
     }
 
