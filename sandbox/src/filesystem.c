@@ -118,7 +118,7 @@ int prepare_rootfs(const char *job_id) {
     return 0;
 }
 
-int mount_overlayfs(const char *job_id){
+int mount_overlayfs(const char *job_id,const char *language){
 
     sandbox_paths paths;
 
@@ -131,15 +131,29 @@ int mount_overlayfs(const char *job_id){
         job_id
     );
 
-    snprintf(
-        overlay_opts,
-        sizeof(overlay_opts),
-        "lowerdir=./sandbox/image/gcc,"
-        "upperdir=%s,"
-        "workdir=%s",
-        paths.upper_dir,
-        paths.work_dir
-    );
+    if(strcmp(language, "c") == 0){
+        snprintf(
+            overlay_opts,
+            sizeof(overlay_opts),
+            "lowerdir=./sandbox/image/gcc:"
+            "./sandbox/image/base_rootfs,"
+            "upperdir=%s,"
+            "workdir=%s",
+            paths.upper_dir,
+            paths.work_dir
+        );  
+    }else if(strcmp(language, "python") == 0){
+        snprintf(
+            overlay_opts,
+            sizeof(overlay_opts),
+            "lowerdir=./sandbox/image/python:"
+            "./sandbox/image/base_rootfs,"
+            "upperdir=%s,"
+            "workdir=%s",
+            paths.upper_dir,
+            paths.work_dir
+        );
+    }
 
     if(mount(
         "overlay",
@@ -152,24 +166,36 @@ int mount_overlayfs(const char *job_id){
         return -1;
     }
 
+    if(mkdir_p(paths.container_app_dir, 0755) == -1 &&
+       errno != EEXIST){
+        perror("mkdir container_app_dir");
+        return -1;
+    }
+
+    if(mkdir_p(paths.container_res_dir, 0755) == -1 &&
+       errno != EEXIST){
+        perror("mkdir container_res_dir");
+        return -1;
+    }
+
     if(mount(
         paths.host_app_dir,
         paths.container_app_dir,
         NULL,
-        MS_BIND,
+        MS_BIND | MS_REC,
         NULL
     ) == -1){
         perror("mount app bind");
         return -1;
     }
 
-    if(mkdir_p(paths.container_res_dir, 0755) == -1 && errno != EEXIST) {
-        perror("mkdir container_res_dir");
-        return -1;
-    }
-
-    
-    if(mount(paths.host_res_dir, paths.container_res_dir, NULL, MS_BIND | MS_REC, NULL) == -1){
+    if(mount(
+        paths.host_res_dir,
+        paths.container_res_dir,
+        NULL,
+        MS_BIND | MS_REC,
+        NULL
+    ) == -1){
         perror("mount result bind");
         return -1;
     }
