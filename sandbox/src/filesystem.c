@@ -178,28 +178,6 @@ int mount_overlayfs(const char *job_id,const char *language){
         return -1;
     }
 
-    if(mount(
-        paths.host_app_dir,
-        paths.container_app_dir,
-        NULL,
-        MS_BIND | MS_REC,
-        NULL
-    ) == -1){
-        perror("mount app bind");
-        return -1;
-    }
-
-    if(mount(
-        paths.host_res_dir,
-        paths.container_res_dir,
-        NULL,
-        MS_BIND | MS_REC,
-        NULL
-    ) == -1){
-        perror("mount result bind");
-        return -1;
-    }
-
     printf("[Parent] OverlayFS mounted\n");
 
     return 0;
@@ -231,9 +209,7 @@ void setup_pivot_root(const char *job_id){
         exit(1);
     }
 
-    // ★ 在 child namespace 建立
-    if(mkdir(".oldroot", 0755) == -1 &&
-       errno != EEXIST){
+    if(mkdir(".oldroot", 0755) == -1 && errno != EEXIST){
         perror("mkdir .oldroot");
         exit(1);
     }
@@ -250,31 +226,54 @@ void setup_pivot_root(const char *job_id){
         exit(1);
     }
 
-    if(mount("proc", "/proc", "proc", 0, NULL) == -1){
+
+    char old_app_path[512];
+    snprintf(old_app_path, sizeof(old_app_path), "/.oldroot/tmp/sandbox/job_%s/app", job_id);
+    
+    mkdir("/app", 0755);
+    if (mount(old_app_path, "/app", NULL, MS_BIND | MS_REC, NULL) == -1) {
+        perror("[Sandbox Sec] Secure mount /app failed");
+        exit(1);
+    }
+    if (mount("/app", "/app", NULL, MS_REMOUNT | MS_BIND, NULL) == -1) {
+        perror("Remount /app failed");
+    }
+
+
+    char old_res_path[512];
+    snprintf(old_res_path, sizeof(old_res_path), "/.oldroot/tmp/sandbox/job_%s/work", job_id);
+    mkdir("/output", 0755);
+    if (mount(old_res_path, "/output", NULL, MS_BIND | MS_REC, NULL) == -1) {
+        perror("[Sandbox Sec] Secure mount /output failed");
+        exit(1);
+    }
+    
+    if (mount("/output", "/output", NULL, MS_REMOUNT | MS_BIND, NULL) == -1) {
+        perror("Remount /output failed");
+    }
+
+    if(mount("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) == -1){
         perror("mount proc");
         exit(1);
     }
 
-    if(mount(NULL, "/.oldroot", NULL,
-        MS_PRIVATE | MS_REC, NULL) == -1){
-        perror("mount private oldroot");
-        exit(1);
+    if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1) {
+        perror("Make root private failed");
     }
 
-    if(umount2("/.oldroot", MNT_DETACH) == -1){
-        perror("umount oldroot");
-        exit(1);
+    if(mount(NULL, "/.oldroot", NULL, MS_PRIVATE | MS_REC, NULL) == -1){ 
+        perror("mount private oldroot"); 
+        exit(1); 
+    }
+    if(umount2("/.oldroot", MNT_DETACH) == -1){ 
+        perror("umount oldroot"); 
+        exit(1); 
+    }
+    if(rmdir("/.oldroot") == -1){ 
+        perror("rmdir oldroot failed"); 
     }
 
-    if(rmdir("/.oldroot") == -1){
-        perror("rmdir oldroot");
-        exit(1);
-    }
-
-    printf(
-        "[Sandbox] Container rootfs ready for Job %s\n",
-        job_id
-    );
+    printf("[Sandbox] Container rootfs ready for Job %s\n", job_id);
 }
 
 int cleanup_container_filesystem(const char *job_id){
