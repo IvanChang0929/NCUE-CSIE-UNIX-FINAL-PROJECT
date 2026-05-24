@@ -4,6 +4,14 @@ import json
 import shutil
 from pathlib import Path
 from api_client import *
+import os
+
+def init_workspace():
+    base_dir = Path("/tmp/sandbox")
+    if not base_dir.exists():
+        # 如果不存在，建立它並給予 777 權限，確保 C (sudo) 和 Python 都不會被卡住
+        base_dir.mkdir(parents=True, exist_ok=True)
+        base_dir.chmod(0o777)
 
 def write_code_to_file(code, file_path):
     with open(file_path, "w") as f:
@@ -37,77 +45,70 @@ def run_job_with_sandbox(job_id):
     except subprocess.TimeoutExpired:
         sandbox_result = {
             "error": "Sandbox Timeout",
-            "exit_code": -1
+            "execute": {"exit_code": -1}
         }
         
     finally:
+        # 清理 Host 端的實體檔案輸出 (C 沙盒已經負責清除了 /tmp 內的系統檔案)
         if result_dir.exists():
-            shutil.rmtree(result_dir, ignore_errors=True)
+            shutil.rmtree(result_dir)
 
     return sandbox_result
 
 
 def analyze_verdict(sandbox_result):
-    """
-    根據 Sandbox 產生的結果，分析並回傳標準的 OJ 判斷結果 (Verdict)。
-    注意：請根據你實際 C 語言寫入 JSON 的 key 名稱，調整下方的 dict 讀取。
-    """
-    # 1. 系統層級錯誤防呆
+    # 1. 系統層級崩潰
     if "error" in sandbox_result:
         return "System Error"
 
-    # 假設你的 JSON 結構有記錄 compile 和 execute 的 exit_code
-    # 如果你的 JSON 結構是平的 (flat)，請直接讀取對應的 key，例如 sandbox_result.get("exit_code")
-    comp_exit_code = sandbox_result.get("compile_exit_code", 0)
-    exec_exit_code = sandbox_result.get("execute_exit_code", 0)
+    compile_data = sandbox_result.get("compile", {})
+    execute_data = sandbox_result.get("execute", {})
 
-    # 2. 檢查編譯狀態
+    comp_exit_code = compile_data.get("exit_code", -1)
+    exec_exit_code = execute_data.get("exit_code", -1)
+
     if comp_exit_code != 0:
-        return "Compilation Error (CE)"
+        return "Compilation Error "
 
-    # 3. 檢查執行狀態 (0 代表順利執行完畢)
     if exec_exit_code == 0:
-        return "Accepted (AC)"  # 備註：真實 OJ 還會去比對輸出是否正確 (WA)
+        return "Accepted"  
 
-    # --- 分析非 0 退出碼 (判斷異常死因) ---
+    if exec_exit_code == 153:
+        return "Output Limit Exceeded (OLE)"
+
+    if exec_exit_code == 137:
+        return "Time / Memory Limit Exceeded (TLE/MLE)"
     
-    # 取得記憶體用量 (請替換成你 JSON 裡實際紀錄 Max RSS 的 key 名稱)
-    # 假設上限是 256MB，我們抓個容錯值，超過 250000 KB (約 244MB) 就當作是爆記憶體
-    max_rss_kb = sandbox_result.get("max_rss", 0) 
-    MEMORY_LIMIT_THRESHOLD = 250000 
-    
-    # (A) Memory Limit Exceeded (MLE)
-    # 139 (SIGSEGV) 或 137 (SIGKILL) 且記憶體逼近設定上限
-    if exec_exit_code in (139, 137) and max_rss_kb >= MEMORY_LIMIT_THRESHOLD:
-        return "Memory Limit Exceeded (MLE)"
-    
-    # (B) Time Limit Exceeded (TLE)
-    # 152 (SIGXCPU 軟限制) 或 137 (SIGKILL 硬限制，且沒爆記憶體)
-    if exec_exit_code in (152, 137):
-        return "Time Limit Exceeded (TLE)"
-    
-    # (C) 特殊攔截判定：Security Violation
-    # 159 (SIGSYS) 代表呼叫了 seccomp 禁用的系統呼叫
     if exec_exit_code == 159:
         return "Security Violation (Blocked by Seccomp)"
 
-    # (D) 其他所有死因 (例如單純的 Segfault、Exit Code 1、除以零 136)
-    return "Runtime Error (RE)"
+
+    if exec_exit_code == 139:
+        return "Runtime Error (Segmentation Fault)"
+    if exec_exit_code == 136:
+        return "Runtime Error (Floating Point Exception)"
+    if exec_exit_code == 134:
+        return "Runtime Error (Aborted / Assert Failed)"
+
+    return f"Runtime Error (Exit Code {exec_exit_code})"
 
 def process_job(job):
     job_id = job["id"]
     code = job["code"]
+    uid = os.getuid()
+    gid = os.getgid()
 
     workdir = Path(f"/tmp/sandbox/job_{job_id}")
 
     app_dir = workdir / "app"
     app_dir.mkdir(parents=True, exist_ok=True)
-
-    app_dir.chmod(0o777)
+    os.chown(app_dir, uid, gid)
+    app_dir.chmod(0o755)
 
     source_file = app_dir / "main.c"
     write_code_to_file(code, source_file)
-    source_file.chmod(0o666)
+    os.chown(source_file, uid, gid)
+    source_file.chmod(0o644)
 
     print(f"[Worker] Write code -> {source_file}")
 
@@ -116,6 +117,7 @@ def process_job(job):
     # 1. 執行沙盒並取得原始 JSON
     result = run_job_with_sandbox(job_id)
     
+    # 2. 判斷狀態
     verdict = analyze_verdict(result)
     result["verdict"] = verdict
     print(f"[Worker] Job {job_id} Verdict -> {verdict}")
@@ -124,6 +126,7 @@ def process_job(job):
     update_job_result(job_id, result)
 
 def main():
+    init_workspace()
     print("[Worker] Started. Waiting for jobs...")
 
     try:
