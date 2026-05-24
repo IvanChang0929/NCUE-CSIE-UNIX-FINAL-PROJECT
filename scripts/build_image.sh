@@ -60,15 +60,13 @@ echo "[Build] Installing packages..."
 if [ "$IMAGE" = "python" ]; then
 
     sudo chroot "$TEMP" /bin/sh -c "
-        apk update &&
-        apk add python3
+        apk add --no-cache python3
     "
 
 elif [ "$IMAGE" = "gcc" ]; then
 
     sudo chroot "$TEMP" /bin/sh -c "
-        apk update &&
-        apk add gcc g++ musl-dev build-base
+        apk add --no-cache gcc musl-dev
     "
 
 else
