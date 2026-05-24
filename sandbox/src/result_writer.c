@@ -28,11 +28,27 @@ void write_combined_json(const char *job_id, StageResult *comp, StageResult *exe
     snprintf(result_dir, sizeof(result_dir), "./sandbox/result/job_%s", job_id);
     snprintf(json_path, sizeof(json_path), "%s/result.json", result_dir);
 
-    mkdir("./sandbox", 0777);
     mkdir("./sandbox/result", 0777);
     if(mkdir(result_dir, 0777) == -1 && errno != EEXIST){
         perror("mkdir result_dir");
         return;
+    }
+
+   
+    if(exec->executed) {
+        char txt_path[512];
+        snprintf(txt_path, sizeof(txt_path), "%s/output.txt", result_dir);
+
+        FILE *ftxt = fopen(txt_path, "r");
+        if(ftxt != NULL) {
+            // 讀取實體檔案內容，蓋掉原本 Pipe 抓到的空資料
+            // sizeof(exec->stdout_buf) - 1 確保不會 Buffer Overflow
+            size_t read_bytes = fread(exec->stdout_buf, 1, sizeof(exec->stdout_buf) - 1, ftxt);
+            exec->stdout_buf[read_bytes] = '\0'; // 確保字串安全結尾
+            fclose(ftxt);
+        } else {
+            exec->stdout_buf[0] = '\0';
+        }
     }
 
     FILE *fjson = fopen(json_path, "w");
