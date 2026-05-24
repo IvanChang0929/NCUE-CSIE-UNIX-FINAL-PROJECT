@@ -20,8 +20,7 @@
 #define NOFILE_LIMIT       32
 #define FILESIZE_LIMIT     (1 * 1024 * 1024)
 
-
-#define CGROUP_PATH "/sys/fs/cgroup/sandbox"
+#define CGROUP_BASE_PATH "/sys/fs/cgroup"
 
 static void set_limit(int resource, rlim_t soft,rlim_t hard){
     struct rlimit rl = {soft, hard};
@@ -31,20 +30,27 @@ static void set_limit(int resource, rlim_t soft,rlim_t hard){
     }
 }
 
-static void write_cgroup_file(const char *name,const char *value){
+static void build_cgroup_path(const char *job_id, char *path, size_t size)
+{
+    snprintf(path, size, "%s/sandbox_job_%s", CGROUP_BASE_PATH, job_id);
+}
 
-    char path[256];
+static void write_cgroup_file(const char *job_id, const char *name, const char *value)
+{
+    char cgroup_path[256];
+    char path[512];
 
-    snprintf(path,sizeof(path),"%s/%s",CGROUP_PATH,name);
+    build_cgroup_path(job_id, cgroup_path, sizeof(cgroup_path));
+    snprintf(path, sizeof(path), "%s/%s", cgroup_path, name);
 
     int fd = open(path, O_WRONLY);
 
-    if(fd == -1){
+    if (fd == -1) {
         perror(path);
         exit(1);
     }
 
-    if(write(fd, value, strlen(value)) == -1){
+    if (write(fd, value, strlen(value)) == -1) {
         perror("write");
         close(fd);
         exit(1);
@@ -71,28 +77,28 @@ void setup_resource_limits(){
     printf("[Sandbox] Resource limits applied\n");
 }
 
-void setup_cgroup(pid_t pid){
-
+void setup_cgroup(pid_t pid, const char *job_id)
+{
     char pid_str[32];
+    char cgroup_path[256];
 
-    if(mkdir(CGROUP_PATH, 0755) == -1){
-        if(errno != EEXIST){
-            perror("mkdir cgroup");
+    build_cgroup_path(job_id, cgroup_path, sizeof(cgroup_path));
+
+    if (mkdir(cgroup_path, 0755) == -1) {
+        if (errno != EEXIST) {
+            perror("mkdir job cgroup");
             exit(1);
         }
     }
 
-    write_cgroup_file("cpu.max","50000 100000");
+    write_cgroup_file(job_id, "cpu.max", "50000 100000");
+    write_cgroup_file(job_id, "memory.max", "536870912");
+    write_cgroup_file(job_id, "pids.max", "64");
 
-    write_cgroup_file("memory.max","536870912");
+    snprintf(pid_str, sizeof(pid_str), "%d", pid);
+    write_cgroup_file(job_id, "cgroup.procs", pid_str);
 
-    write_cgroup_file("pids.max","64");
-
-    snprintf(pid_str,sizeof(pid_str),"%d",pid);
-
-    write_cgroup_file("cgroup.procs",pid_str);
-
-    printf("[Parent] cgroup configured\n");
+    printf("[Parent] cgroup configured for Job %s\n", job_id);
 }
 
 void print_resource_usage(void){
@@ -185,4 +191,29 @@ void print_sandbox_result(int status){
     }
 
     print_resource_usage();
+}
+
+long read_cgroup_memory_current_kb(const char *job_id)
+{
+    char cgroup_path[256];
+    char memory_path[512];
+
+    build_cgroup_path(job_id, cgroup_path, sizeof(cgroup_path));
+    snprintf(memory_path, sizeof(memory_path), "%s/memory.current", cgroup_path);
+
+    FILE *fp = fopen(memory_path, "r");
+    if (fp == NULL) {
+        return -1;
+    }
+
+    long bytes = 0;
+
+    if (fscanf(fp, "%ld", &bytes) != 1) {
+        fclose(fp);
+        return -1;
+    }
+
+    fclose(fp);
+
+    return bytes / 1024;
 }

@@ -1,5 +1,8 @@
 import tkinter as tk
 import requests
+import json
+import threading
+import websocket
 
 from tkinter import ttk, messagebox, filedialog
 from datetime import datetime
@@ -13,6 +16,84 @@ class _HiddenValue:
         pass
 
 
+class GaugeWidget(tk.Frame):
+    def __init__(self, parent, title, unit="%", max_value=100, size=142):
+        super().__init__(parent, bg="#171a21")
+        self.title = title
+        self.unit = unit
+        self.max_value = max_value
+        self.size = size
+        self.value = 0
+
+        self.canvas = tk.Canvas(
+            self,
+            width=size,
+            height=size,
+            bg="#171a21",
+            highlightthickness=0,
+            bd=0,
+        )
+        self.canvas.pack(fill="both", expand=True)
+        self.draw(0)
+
+    def draw(self, value):
+        value = max(0, min(float(value), self.max_value))
+        self.value = value
+        percent = value / self.max_value if self.max_value else 0
+
+        if percent < 0.55:
+            accent = "#5f8f78"
+        elif percent < 0.8:
+            accent = "#b88a4a"
+        else:
+            accent = "#b56b6b"
+
+        self.canvas.delete("all")
+        pad = 14
+        box = (pad, pad, self.size - pad, self.size - pad)
+
+        self.canvas.create_arc(
+            box,
+            start=210,
+            extent=-240,
+            style="arc",
+            outline="#242936",
+            width=14,
+        )
+        self.canvas.create_arc(
+            box,
+            start=210,
+            extent=-240 * percent,
+            style="arc",
+            outline=accent,
+            width=14,
+        )
+        self.canvas.create_text(
+            self.size / 2,
+            self.size * 0.42,
+            text=self.title,
+            fill="#9aa3af",
+            font=("Arial", 10, "bold"),
+        )
+        self.canvas.create_text(
+            self.size / 2,
+            self.size * 0.58,
+            text=f"{int(round(value))}{self.unit}",
+            fill="#f8fafc",
+            font=("Arial", 20, "bold"),
+        )
+        self.canvas.create_text(
+            self.size / 2,
+            self.size * 0.78,
+            text="LOW        HIGH",
+            fill="#737b88",
+            font=("Arial", 7, "bold"),
+        )
+
+    def set_value(self, value):
+        self.draw(value)
+
+
 class SandboxMockup(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -20,10 +101,21 @@ class SandboxMockup(tk.Tk):
         self.title("AI Sandbox 安全程式碼執行平台")
         self.geometry("1200x760")
         self.minsize(1000, 650)
-        self.configure(bg="#0f172a")
+        self.configure(bg="#0f1115")
 
         self.running = False
         self._applying_preset = False
+        self.monitor_ws = None
+        self.monitor_thread = None
+        self.current_job_id = None
+        self.latest_monitor_data = {}
+
+        self.mode_button_colors = {
+            "basic": {"bg": "#5f8f78", "hover": "#507864"},
+            "strict": {"bg": "#9f5d5d", "hover": "#854f4f"},
+            "dev": {"bg": "#7a6f9f", "hover": "#685f88"},
+            "custom": {"bg": "#b88a4a", "hover": "#9f7740"},
+        }
 
         self.mode_presets = {
             "basic": {
@@ -66,65 +158,65 @@ class SandboxMockup(tk.Tk):
         style = ttk.Style()
         style.theme_use("clam")
 
-        style.configure("TFrame", background="#0f172a")
-        style.configure("Card.TFrame", background="#111827", relief="flat")
-        style.configure("TLabel", background="#111827", foreground="#e5e7eb", font=("Arial", 12))
-        style.configure("Title.TLabel", background="#0f172a", foreground="#ffffff", font=("Arial", 24, "bold"))
-        style.configure("Subtitle.TLabel", background="#0f172a", foreground="#94a3b8", font=("Arial", 12))
-        style.configure("CardTitle.TLabel", background="#111827", foreground="#ffffff", font=("Arial", 16, "bold"))
-        style.configure("Small.TLabel", background="#111827", foreground="#94a3b8", font=("Arial", 10))
-        style.configure("Value.TLabel", background="#111827", foreground="#ffffff", font=("Arial", 18, "bold"))
-        style.configure("Hint.TLabel", background="#111827", foreground="#cbd5e1", font=("Arial", 10))
+        style.configure("TFrame", background="#0f1115")
+        style.configure("Card.TFrame", background="#171a21", relief="flat")
+        style.configure("TLabel", background="#171a21", foreground="#e6e8eb", font=("Arial", 12))
+        style.configure("Title.TLabel", background="#0f1115", foreground="#f8fafc", font=("Arial", 24, "bold"))
+        style.configure("Subtitle.TLabel", background="#0f1115", foreground="#9aa3af", font=("Arial", 12))
+        style.configure("CardTitle.TLabel", background="#171a21", foreground="#f8fafc", font=("Arial", 16, "bold"))
+        style.configure("Small.TLabel", background="#171a21", foreground="#9aa3af", font=("Arial", 10))
+        style.configure("Value.TLabel", background="#171a21", foreground="#f8fafc", font=("Arial", 18, "bold"))
+        style.configure("Hint.TLabel", background="#171a21", foreground="#c8ced8", font=("Arial", 10))
 
         style.configure(
             "TButton",
             font=("Arial", 11, "bold"),
             padding=(12, 8),
-            background="#2563eb",
-            foreground="#ffffff",
+            background="#4f6f8f",
+            foreground="#f8fafc",
             borderwidth=0,
         )
-        style.map("TButton", background=[("active", "#1d4ed8")])
+        style.map("TButton", background=[("active", "#3f5f7d")])
 
-        style.configure("Secondary.TButton", background="#334155", foreground="#ffffff")
+        style.configure("Secondary.TButton", background="#2a2f3a", foreground="#f8fafc")
         style.map("Secondary.TButton", background=[("active", "#475569")])
 
-        style.configure("Danger.TButton", background="#dc2626", foreground="#ffffff")
-        style.map("Danger.TButton", background=[("active", "#b91c1c")])
+        style.configure("Danger.TButton", background="#9f5d5d", foreground="#f8fafc")
+        style.map("Danger.TButton", background=[("active", "#854f4f")])
 
         style.configure(
             "TCombobox",
-            fieldbackground="#020617",
-            background="#1f2937",
-            foreground="#ffffff",
-            arrowcolor="#ffffff",
+            fieldbackground="#0b0d12",
+            background="#20242d",
+            foreground="#f8fafc",
+            arrowcolor="#f8fafc",
         )
 
         style.configure(
             "green.Horizontal.TProgressbar",
-            troughcolor="#1e293b",
-            background="#22c55e",
-            bordercolor="#1e293b",
-            lightcolor="#22c55e",
-            darkcolor="#22c55e",
+            troughcolor="#242936",
+            background="#5f8f78",
+            bordercolor="#242936",
+            lightcolor="#5f8f78",
+            darkcolor="#5f8f78",
         )
 
         style.configure(
             "Treeview",
-            background="#020617",
-            foreground="#e5e7eb",
-            fieldbackground="#020617",
-            bordercolor="#334155",
+            background="#0b0d12",
+            foreground="#e6e8eb",
+            fieldbackground="#0b0d12",
+            bordercolor="#2a2f3a",
             rowheight=30,
             font=("Menlo", 11),
         )
-        style.configure("Treeview.Heading", background="#111827", foreground="#ffffff", font=("Arial", 11, "bold"))
-        style.map("Treeview", background=[("selected", "#2563eb")])
+        style.configure("Treeview.Heading", background="#171a21", foreground="#f8fafc", font=("Arial", 11, "bold"))
+        style.map("Treeview", background=[("selected", "#4f6f8f")])
 
     def create_layout(self):
         self.create_header()
 
-        main = tk.Frame(self, bg="#0f172a")
+        main = tk.Frame(self, bg="#0f1115")
         main.pack(fill="both", expand=True, padx=24, pady=18)
 
         main.columnconfigure(0, weight=1, uniform="top")
@@ -144,44 +236,80 @@ class SandboxMockup(tk.Tk):
         self.mem_bar = _HiddenValue()
 
     def create_header(self):
-        header = tk.Frame(self, bg="#0f172a")
+        header = tk.Frame(self, bg="#0f1115")
         header.pack(fill="x", padx=28, pady=(24, 8))
 
-        # 左邊放標題，右邊放 mode，中央保留伸縮空間給之後新增功能。
-        # 原本 mode 卡片太寬，加上沒有固定高度，視窗寬度不足時會被擠到右邊只剩一條線。
-        header.columnconfigure(0, weight=0, minsize=540)
-        header.columnconfigure(1, weight=1, minsize=90)
-        header.columnconfigure(2, weight=0, minsize=430)
-        header.rowconfigure(0, weight=0)
+        # 左側資源監控縮小，右側 Mode Setting 放大，讓設定區有更多操作空間。
+        header.columnconfigure(0, weight=2, uniform="header")
+        header.columnconfigure(1, weight=5, uniform="header")
 
-        title_area = tk.Frame(header, bg="#0f172a", width=540)
-        title_area.grid(row=0, column=0, sticky="nw")
-        title_area.grid_propagate(False)
-
-        title = ttk.Label(title_area, text="AI Sandbox 安全程式碼執行平台", style="Title.TLabel")
-        title.pack(anchor="w")
-
-        subtitle = ttk.Label(
-            title_area,
-            text="前端展示型：左側輸入程式碼、右側顯示執行結果，下方監控後端 Job 狀態。",
-            style="Subtitle.TLabel",
-            wraplength=520,
+        monitor_card = tk.Frame(
+            header,
+            bg="#171a21",
+            highlightbackground="#2a2f3a",
+            highlightthickness=1,
+            height=172,
         )
-        subtitle.pack(anchor="w", pady=(6, 0))
+        monitor_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        monitor_card.grid_propagate(False)
+        monitor_card.columnconfigure(0, weight=1)
+        monitor_card.columnconfigure(1, weight=1)
 
-        # 預留區：之後要加其他按鈕、設定、使用者資訊時可以直接放在這一欄。
-        self.header_reserved_area = tk.Frame(header, bg="#0f172a")
-        self.header_reserved_area.grid(row=0, column=1, sticky="nsew", padx=18)
+        title_row = tk.Frame(monitor_card, bg="#171a21")
+        title_row.grid(row=0, column=0, columnspan=2, sticky="ew", padx=14, pady=(10, 0))
+        title_row.columnconfigure(0, weight=1)
 
-        self.create_mode_selector(header, row=0, column=2, sticky="ne")
+        tk.Label(
+            title_row,
+            text="Sandbox 資源監控",
+            bg="#171a21",
+            fg="#f8fafc",
+            font=("Arial", 13, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+
+        self.monitor_state_var = tk.StringVar(value="idle")
+        tk.Label(
+            title_row,
+            textvariable=self.monitor_state_var,
+            bg="#141821",
+            fg="#6f8fa3",
+            font=("Arial", 9, "bold"),
+            padx=8,
+            pady=3,
+        ).grid(row=0, column=1, sticky="e", padx=(6, 6))
+
+        ttk.Button(
+            title_row,
+            text="啟動",
+            command=self.start_resource_monitor,
+        ).grid(row=0, column=2, sticky="e")
+
+        gauge_area = tk.Frame(monitor_card, bg="#171a21")
+        gauge_area.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=10, pady=(0, 8))
+        gauge_area.columnconfigure(0, weight=1)
+        gauge_area.columnconfigure(1, weight=1)
+
+        self.cpu_gauge = GaugeWidget(gauge_area, "CPU", "%", 100, size=118)
+        self.cpu_gauge.grid(row=0, column=0, sticky="n")
+
+        self.memory_gauge = GaugeWidget(gauge_area, "Memory", "%", 100, size=118)
+        self.memory_gauge.grid(row=0, column=1, sticky="n")
+
+
+        self.create_mode_selector(header, row=0, column=1, sticky="nsew", padx=(10, 0))
+
+
+    def start_resource_monitor(self):
+        """監控不再使用假資料；送出程式後會自動連線 WebSocket。"""
+        self.set_output("請先送出程式，系統會自動連線 WebSocket 顯示即時監控。")
 
     def make_card(self, parent, row, column, sticky="nsew", columnspan=1):
-        wrapper = tk.Frame(parent, bg="#334155")
+        wrapper = tk.Frame(parent, bg="#2a2f3a")
         wrapper.grid(row=row, column=column, columnspan=columnspan, sticky=sticky, padx=10, pady=10)
         wrapper.columnconfigure(0, weight=1)
         wrapper.rowconfigure(0, weight=1)
 
-        card = tk.Frame(wrapper, bg="#111827")
+        card = tk.Frame(wrapper, bg="#171a21")
         card.grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
         return card
 
@@ -190,7 +318,7 @@ class SandboxMockup(tk.Tk):
         card.columnconfigure(0, weight=1)
         card.rowconfigure(2, weight=1)
 
-        top = tk.Frame(card, bg="#111827")
+        top = tk.Frame(card, bg="#171a21")
         top.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 8))
         top.columnconfigure(0, weight=1)
 
@@ -208,9 +336,9 @@ class SandboxMockup(tk.Tk):
 
         self.code_text = tk.Text(
             card,
-            bg="#020617",
-            fg="#d1fae5",
-            insertbackground="#ffffff",
+            bg="#0b0d12",
+            fg="#d7e7dd",
+            insertbackground="#f8fafc",
             relief="flat",
             font=("Menlo", 13),
             wrap="none",
@@ -219,7 +347,7 @@ class SandboxMockup(tk.Tk):
         )
         self.code_text.grid(row=2, column=0, sticky="nsew", padx=18, pady=8)
 
-        actions = tk.Frame(card, bg="#111827")
+        actions = tk.Frame(card, bg="#171a21")
         actions.grid(row=3, column=0, sticky="ew", padx=18, pady=(8, 18))
 
         ttk.Button(actions, text="載入程式碼", command=self.choose_code_file).pack(side="left", padx=(0, 8))
@@ -227,73 +355,80 @@ class SandboxMockup(tk.Tk):
         ttk.Button(actions, text="清空程式碼", style="Secondary.TButton", command=self.clear_code).pack(side="left", padx=8)
 
     def create_mode_selector(self, parent, row=0, column=0, sticky="ew", padx=0, pady=0):
-        mode_bg = "#111827"
-        inner_bg = "#0b1220"
+        mode_bg = "#171a21"
+        inner_bg = "#141821"
 
-        # 固定在 header 右側的精簡版設定卡，不佔用輸入/輸出區上方空間。
         mode_card = tk.Frame(
             parent,
             bg=mode_bg,
-            highlightbackground="#334155",
+            highlightbackground="#2a2f3a",
             highlightthickness=1,
-            width=430,
-            height=150,
+            height=188,
         )
         mode_card.grid(row=row, column=column, sticky=sticky, padx=padx, pady=pady)
         mode_card.grid_propagate(False)
-        mode_card.columnconfigure(0, weight=1)
+        mode_card.columnconfigure(0, weight=3)
+        mode_card.columnconfigure(1, weight=1)
 
         title_row = tk.Frame(mode_card, bg=mode_bg)
-        title_row.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 2))
-        title_row.columnconfigure(1, weight=1)
+        title_row.grid(row=0, column=0, columnspan=2, sticky="ew", padx=18, pady=(12, 8))
+        title_row.columnconfigure(0, weight=1)
 
         tk.Label(
             title_row,
-            text="Container Mode",
+            text="Mode Setting",
             bg=mode_bg,
-            fg="#ffffff",
-            font=("Arial", 11, "bold"),
+            fg="#f8fafc",
+            font=("Arial", 14, "bold"),
         ).grid(row=0, column=0, sticky="w")
 
         self.mode_summary_var = tk.StringVar(value="")
         tk.Label(
             title_row,
             textvariable=self.mode_summary_var,
-            bg=mode_bg,
-            fg="#cbd5e1",
-            font=("Arial", 8),
-            anchor="e",
-        ).grid(row=0, column=1, sticky="e", padx=(8, 0))
+            bg="#141821",
+            fg="#c8ced8",
+            font=("Arial", 9),
+            padx=10,
+            pady=3,
+        ).grid(row=0, column=1, sticky="e")
 
         self.mode_var = tk.StringVar(value="basic")
-        preset_area = tk.Frame(mode_card, bg=inner_bg)
-        preset_area.grid(row=1, column=0, sticky="ew", padx=12, pady=(4, 6))
+        preset_area = tk.Frame(mode_card, bg=mode_bg)
+        preset_area.grid(row=1, column=0, sticky="ew", padx=(18, 8), pady=(0, 8))
 
-        preset_area.columnconfigure(0, weight=1)
-        preset_area.columnconfigure(1, weight=1)
+        for i in range(4):
+            preset_area.columnconfigure(i, weight=1)
+
+        self.mode_buttons = {}
 
         for index, mode_key in enumerate(["basic", "strict", "dev", "custom"]):
             preset = self.mode_presets[mode_key]
             radio = tk.Radiobutton(
                 preset_area,
-                text=preset["label"],
+                text=preset["label"].replace(" Mode", ""),
                 variable=self.mode_var,
                 value=mode_key,
                 command=lambda key=mode_key: self.apply_mode_preset(key),
+                indicatoron=False,
                 bg=inner_bg,
-                fg="#e5e7eb",
-                selectcolor="#020617",
-                activebackground=inner_bg,
-                activeforeground="#ffffff",
-                font=("Arial", 8, "bold"),
-                anchor="w",
-                padx=2,
-                pady=0,
+                fg="#c8ced8",
+                selectcolor=self.mode_button_colors[mode_key]["bg"],
+                activebackground=self.mode_button_colors[mode_key]["hover"],
+                activeforeground="#f8fafc",
+                font=("Arial", 9, "bold"),
+                relief="flat",
+                bd=0,
+                highlightthickness=1,
+                highlightbackground="#242936",
+                padx=10,
+                pady=6,
             )
-            radio.grid(row=index // 2, column=index % 2, sticky="w", padx=(0, 6), pady=1)
+            radio.grid(row=0, column=index, sticky="ew", padx=4)
+            self.mode_buttons[mode_key] = radio
 
         custom_area = tk.Frame(mode_card, bg=mode_bg)
-        custom_area.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 8))
+        custom_area.grid(row=2, column=0, sticky="ew", padx=(18, 8), pady=(0, 10))
         custom_area.columnconfigure(1, weight=1)
 
         self.cpu_var = tk.DoubleVar(value=1.0)
@@ -308,6 +443,27 @@ class SandboxMockup(tk.Tk):
         self._create_resource_slider(custom_area, 1, "Memory", self.memory_var, 64, 1024, 64, self.memory_label_var)
         self._create_resource_slider(custom_area, 2, "Timeout", self.timeout_var, 1, 60, 1, self.timeout_label_var)
 
+        limit_box = tk.Frame(mode_card, bg=inner_bg, highlightbackground="#242936", highlightthickness=1)
+        limit_box.grid(row=1, column=1, rowspan=2, sticky="nsew", padx=(4, 18), pady=(0, 10))
+        limit_box.columnconfigure(0, weight=1)
+
+        self.limit_summary_var = tk.StringVar(value="CPU 1 core\nMemory 256 MB\nTimeout 10 s")
+        tk.Label(
+            limit_box,
+            text="Current Limit",
+            bg=inner_bg,
+            fg="#9aa3af",
+            font=("Arial", 9, "bold"),
+        ).grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
+        tk.Label(
+            limit_box,
+            textvariable=self.limit_summary_var,
+            bg=inner_bg,
+            fg="#e6e8eb",
+            justify="left",
+            font=("Menlo", 10),
+        ).grid(row=1, column=0, sticky="w", padx=12, pady=(0, 12))
+
     def _create_resource_slider(self, parent, row, title, variable, from_, to, resolution, label_var):
         unit_map = {
             "CPU": "core",
@@ -321,7 +477,7 @@ class SandboxMockup(tk.Tk):
             parent,
             text=title,
             bg=bg,
-            fg="#cbd5e1",
+            fg="#c8ced8",
             font=("Arial", 8, "bold"),
         ).grid(row=row, column=0, sticky="w", padx=(0, 6), pady=0)
 
@@ -335,9 +491,9 @@ class SandboxMockup(tk.Tk):
             showvalue=False,
             command=lambda _value: self.on_custom_value_changed(),
             bg=bg,
-            fg="#e5e7eb",
-            troughcolor="#1e293b",
-            activebackground="#2563eb",
+            fg="#e6e8eb",
+            troughcolor="#242936",
+            activebackground="#4f6f8f",
             highlightthickness=0,
             bd=0,
         )
@@ -347,7 +503,7 @@ class SandboxMockup(tk.Tk):
             parent,
             textvariable=label_var,
             bg=bg,
-            fg="#ffffff",
+            fg="#f8fafc",
             font=("Menlo", 8),
             width=9,
             anchor="w",
@@ -387,9 +543,36 @@ class SandboxMockup(tk.Tk):
         self.cpu_label_var.set(f"{cpu:g} core")
         self.memory_label_var.set(f"{memory} MB")
         self.timeout_label_var.set(f"{timeout} s")
-        self.mode_summary_var.set(
-            f"{mode_name}｜{cpu:g} core｜{memory}MB｜{timeout}s"
-        )
+        self.mode_summary_var.set(f"{mode_name}｜{cpu:g} core｜{memory}MB｜{timeout}s")
+
+        if hasattr(self, "limit_summary_var"):
+            self.limit_summary_var.set(f"CPU {cpu:g} core\nMemory {memory} MB\nTimeout {timeout} s")
+
+        self.update_mode_button_styles(mode_key)
+
+    def update_mode_button_styles(self, selected_mode):
+        if not hasattr(self, "mode_buttons"):
+            return
+
+        for mode_key, button in self.mode_buttons.items():
+            if mode_key == selected_mode:
+                color = self.mode_button_colors[mode_key]
+                button.config(
+                    bg=color["bg"],
+                    fg="#f8fafc",
+                    activebackground=color["hover"],
+                    activeforeground="#f8fafc",
+                    highlightbackground=color["bg"],
+                )
+            else:
+                color = self.mode_button_colors[mode_key]
+                button.config(
+                    bg="#141821",
+                    fg="#c8ced8",
+                    activebackground=color["hover"],
+                    activeforeground="#f8fafc",
+                    highlightbackground="#242936",
+                )
 
     def get_mode_config(self):
         self.update_mode_summary()
@@ -405,13 +588,23 @@ class SandboxMockup(tk.Tk):
         card.columnconfigure(0, weight=1)
         card.rowconfigure(1, weight=1)
 
-        ttk.Label(card, text="執行結果輸出", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w", padx=18, pady=(18, 8))
+        top = tk.Frame(card, bg="#171a21")
+        top.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 8))
+        top.columnconfigure(0, weight=1)
+
+        ttk.Label(top, text="執行結果輸出", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Button(
+            top,
+            text="歷史紀錄",
+            style="Secondary.TButton",
+            command=self.open_history_window,
+        ).grid(row=0, column=1, sticky="e")
 
         self.output_text = tk.Text(
             card,
-            bg="#020617",
-            fg="#cbd5e1",
-            insertbackground="#ffffff",
+            bg="#0b0d12",
+            fg="#c8ced8",
+            insertbackground="#f8fafc",
             relief="flat",
             font=("Menlo", 12),
             wrap="word",
@@ -420,101 +613,104 @@ class SandboxMockup(tk.Tk):
         )
         self.output_text.grid(row=1, column=0, sticky="nsew", padx=18, pady=(0, 18))
 
-        self.output_text.tag_config("title", foreground="#ffffff", font=("Menlo", 14, "bold"))
-        self.output_text.tag_config("label", foreground="#38bdf8", font=("Menlo", 12, "bold"))
-        self.output_text.tag_config("success", foreground="#22c55e", font=("Menlo", 12, "bold"))
-        self.output_text.tag_config("error", foreground="#ef4444", font=("Menlo", 12, "bold"))
-        self.output_text.tag_config("warning", foreground="#facc15", font=("Menlo", 12, "bold"))
-        self.output_text.tag_config("muted", foreground="#94a3b8")
-        self.output_text.tag_config("code", foreground="#d1fae5")
+        self.output_text.tag_config("title", foreground="#f8fafc", font=("Menlo", 14, "bold"))
+        self.output_text.tag_config("label", foreground="#7aa2c7", font=("Menlo", 12, "bold"))
+        self.output_text.tag_config("success", foreground="#5f8f78", font=("Menlo", 12, "bold"))
+        self.output_text.tag_config("error", foreground="#b56b6b", font=("Menlo", 12, "bold"))
+        self.output_text.tag_config("muted", foreground="#9aa3af")
+        self.output_text.tag_config("code", foreground="#d7e7dd")
 
         self.set_output("尚未執行程式。")
 
     def create_job_monitor_card(self, parent):
+        # 這一區改回 Container 監控版面；目前先做 UI，資料用前端假資料展示。
+        self.create_container_monitor_card(parent)
+
+    def create_container_monitor_card(self, parent):
         card = self.make_card(parent, 1, 0, columnspan=2)
         card.columnconfigure(0, weight=1)
         card.rowconfigure(1, weight=1)
 
-        header = tk.Frame(card, bg="#111827")
+        header = tk.Frame(card, bg="#171a21")
         header.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 10))
         header.columnconfigure(0, weight=1)
 
-        ttk.Label(header, text="Job 狀態監控", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(header, text="Container 監控", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
 
-        monitor_actions = tk.Frame(header, bg="#111827")
-        monitor_actions.grid(row=0, column=1, sticky="e")
+        tk.Label(
+            header,
+            text="UI preview：之後可接 sandbox/container 狀態 API",
+            bg="#171a21",
+            fg="#9aa3af",
+            font=("Arial", 10),
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
 
-        ttk.Button(
-            monitor_actions,
-            text="歷史紀錄",
-            style="Secondary.TButton",
-            command=self.open_history_window,
-        ).pack(side="left", padx=(0, 8))
+        monitor_actions = tk.Frame(header, bg="#171a21")
+        monitor_actions.grid(row=0, column=1, rowspan=2, sticky="e")
 
         ttk.Button(
             monitor_actions,
             text="重新整理",
             style="Secondary.TButton",
-            command=self.refresh_jobs,
+            command=self.refresh_containers,
         ).pack(side="left")
 
         columns = (
-            "id",
-            "language",
+            "container_id",
+            "name",
             "status",
-            "output",
-            "error",
-            "created_at",
-            "updated_at",
+            "cpu",
+            "memory",
+            "pid",
+            "uptime",
+            "limit",
         )
 
-        table_outer = tk.Frame(card, bg="#111827")
+        table_outer = tk.Frame(card, bg="#171a21")
         table_outer.grid(row=1, column=0, sticky="nsew", padx=18, pady=(0, 18))
         table_outer.columnconfigure(0, weight=1)
         table_outer.rowconfigure(0, weight=1)
 
-        self.job_table = ttk.Treeview(table_outer, columns=columns, show="headings", height=7)
+        self.container_table = ttk.Treeview(table_outer, columns=columns, show="headings", height=7)
+        self.job_table = self.container_table
 
         headings = {
-            "id": "Job ID",
-            "language": "Language",
+            "container_id": "Container ID",
+            "name": "Name",
             "status": "Status",
-            "output": "Output",
-            "error": "Error",
-            "created_at": "Created At",
-            "updated_at": "Updated At",
+            "cpu": "CPU",
+            "memory": "Memory",
+            "pid": "PID",
+            "uptime": "Uptime",
+            "limit": "Limit",
         }
 
         widths = {
-            "id": 80,
-            "language": 100,
-            "status": 100,
-            "output": 260,
-            "error": 260,
-            "created_at": 170,
-            "updated_at": 170,
+            "container_id": 150,
+            "name": 160,
+            "status": 110,
+            "cpu": 90,
+            "memory": 110,
+            "pid": 90,
+            "uptime": 120,
+            "limit": 260,
         }
 
         for col in columns:
-            self.job_table.heading(col, text=headings[col])
-            self.job_table.column(col, width=widths[col], anchor="w")
+            self.container_table.heading(col, text=headings[col])
+            self.container_table.column(col, width=widths[col], anchor="w")
 
-        self.job_table.grid(row=0, column=0, sticky="nsew")
+        self.container_table.grid(row=0, column=0, sticky="nsew")
 
-        y_scrollbar = ttk.Scrollbar(table_outer, orient="vertical", command=self.job_table.yview)
+        y_scrollbar = ttk.Scrollbar(table_outer, orient="vertical", command=self.container_table.yview)
         y_scrollbar.grid(row=0, column=1, sticky="ns")
-        self.job_table.configure(yscrollcommand=y_scrollbar.set)
+        self.container_table.configure(yscrollcommand=y_scrollbar.set)
 
-        x_scrollbar = ttk.Scrollbar(table_outer, orient="horizontal", command=self.job_table.xview)
+        x_scrollbar = ttk.Scrollbar(table_outer, orient="horizontal", command=self.container_table.xview)
         x_scrollbar.grid(row=1, column=0, sticky="ew")
-        self.job_table.configure(xscrollcommand=x_scrollbar.set)
+        self.container_table.configure(xscrollcommand=x_scrollbar.set)
 
-        self.job_table.tag_configure("done", foreground="#22c55e")
-        self.job_table.tag_configure("error", foreground="#ef4444")
-        self.job_table.tag_configure("running", foreground="#facc15")
-        self.job_table.tag_configure("pending", foreground="#38bdf8")
-
-        self.job_table.bind("<<TreeviewSelect>>", self.show_selected_job)
+        self.container_table.bind("<<TreeviewSelect>>", self.show_selected_container)
 
     def open_history_window(self):
         """開啟歷史紀錄視窗，資料來源沿用 main.py 既有的 GET /jobs API。"""
@@ -522,33 +718,33 @@ class SandboxMockup(tk.Tk):
         history_window.title("Job 歷史紀錄")
         history_window.geometry("1100x620")
         history_window.minsize(900, 520)
-        history_window.configure(bg="#0f172a")
+        history_window.configure(bg="#0f1115")
 
         history_window.columnconfigure(0, weight=1)
         history_window.rowconfigure(1, weight=1)
         history_window.rowconfigure(2, weight=1)
 
-        header = tk.Frame(history_window, bg="#0f172a")
+        header = tk.Frame(history_window, bg="#0f1115")
         header.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 10))
         header.columnconfigure(0, weight=1)
 
         tk.Label(
             header,
             text="Job 歷史紀錄",
-            bg="#0f172a",
-            fg="#ffffff",
+            bg="#0f1115",
+            fg="#f8fafc",
             font=("Arial", 20, "bold"),
         ).grid(row=0, column=0, sticky="w")
 
         tk.Label(
             header,
             text="資料來源：GET /jobs，點選紀錄可查看完整程式碼與輸出。",
-            bg="#0f172a",
-            fg="#94a3b8",
+            bg="#0f1115",
+            fg="#9aa3af",
             font=("Arial", 10),
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
 
-        content = tk.Frame(history_window, bg="#111827", highlightbackground="#334155", highlightthickness=1)
+        content = tk.Frame(history_window, bg="#171a21", highlightbackground="#2a2f3a", highlightthickness=1)
         content.grid(row=1, column=0, sticky="nsew", padx=18, pady=(0, 10))
         content.columnconfigure(0, weight=1)
         content.rowconfigure(0, weight=1)
@@ -589,10 +785,10 @@ class SandboxMockup(tk.Tk):
             history_table.heading(col, text=headings[col])
             history_table.column(col, width=widths[col], anchor="w")
 
-        history_table.tag_configure("done", foreground="#22c55e")
-        history_table.tag_configure("error", foreground="#ef4444")
-        history_table.tag_configure("running", foreground="#facc15")
-        history_table.tag_configure("pending", foreground="#38bdf8")
+        history_table.tag_configure("done", foreground="#5f8f78")
+        history_table.tag_configure("error", foreground="#b56b6b")
+        history_table.tag_configure("running", foreground="#b88a4a")
+        history_table.tag_configure("pending", foreground="#7aa2c7")
 
         history_table.grid(row=0, column=0, sticky="nsew", padx=(12, 0), pady=12)
 
@@ -604,7 +800,7 @@ class SandboxMockup(tk.Tk):
         x_scrollbar.grid(row=1, column=0, sticky="ew", padx=(12, 0), pady=(0, 12))
         history_table.configure(xscrollcommand=x_scrollbar.set)
 
-        detail_frame = tk.Frame(history_window, bg="#111827", highlightbackground="#334155", highlightthickness=1)
+        detail_frame = tk.Frame(history_window, bg="#171a21", highlightbackground="#2a2f3a", highlightthickness=1)
         detail_frame.grid(row=2, column=0, sticky="nsew", padx=18, pady=(0, 18))
         detail_frame.columnconfigure(0, weight=1)
         detail_frame.rowconfigure(1, weight=1)
@@ -612,31 +808,31 @@ class SandboxMockup(tk.Tk):
         tk.Label(
             detail_frame,
             text="詳細內容",
-            bg="#111827",
-            fg="#ffffff",
+            bg="#171a21",
+            fg="#f8fafc",
             font=("Arial", 13, "bold"),
         ).grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
 
         detail_text = tk.Text(
             detail_frame,
-            bg="#020617",
-            fg="#cbd5e1",
-            insertbackground="#ffffff",
+            bg="#0b0d12",
+            fg="#c8ced8",
+            insertbackground="#f8fafc",
             relief="flat",
             font=("Menlo", 11),
             wrap="word",
             padx=12,
             pady=12,
         )
+
         detail_text.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
 
-        detail_text.tag_config("title", foreground="#ffffff", font=("Menlo", 13, "bold"))
-        detail_text.tag_config("label", foreground="#38bdf8", font=("Menlo", 11, "bold"))
-        detail_text.tag_config("success", foreground="#22c55e", font=("Menlo", 11, "bold"))
-        detail_text.tag_config("error", foreground="#ef4444", font=("Menlo", 11, "bold"))
-        detail_text.tag_config("warning", foreground="#facc15", font=("Menlo", 11, "bold"))
-        detail_text.tag_config("muted", foreground="#94a3b8")
-        detail_text.tag_config("code", foreground="#d1fae5")
+        detail_text.tag_config("title", foreground="#f8fafc", font=("Menlo", 13, "bold"))
+        detail_text.tag_config("label", foreground="#7aa2c7", font=("Menlo", 11, "bold"))
+        detail_text.tag_config("success", foreground="#5f8f78", font=("Menlo", 11, "bold"))
+        detail_text.tag_config("error", foreground="#b56b6b", font=("Menlo", 11, "bold"))
+        detail_text.tag_config("muted", foreground="#9aa3af")
+        detail_text.tag_config("code", foreground="#d7e7dd")
 
         detail_text.insert("1.0", "請選擇一筆 Job 歷史紀錄。")
         detail_text.config(state="disabled")
@@ -646,8 +842,6 @@ class SandboxMockup(tk.Tk):
             detail_text.delete("1.0", "end")
             detail_text.insert("1.0", text)
             detail_text.config(state="disabled")
-
-
         def set_detail_rich(parts):
             detail_text.config(state="normal")
             detail_text.delete("1.0", "end")
@@ -659,7 +853,6 @@ class SandboxMockup(tk.Tk):
                     detail_text.insert("end", text)
 
             detail_text.config(state="disabled")
-
         def load_history():
             try:
                 response = requests.get(f"{API_URL}/jobs", timeout=5)
@@ -679,8 +872,8 @@ class SandboxMockup(tk.Tk):
 
             for job in jobs:
                 job_id = str(job.get("id", "-"))
-
                 status = job.get("status", "-")
+
                 history_table.insert(
                     "",
                     "end",
@@ -718,8 +911,13 @@ class SandboxMockup(tk.Tk):
 
             status = job.get("status", "-")
             is_success = status == "done"
-            status_text = "Success / Accepted" if is_success else "Error / Failed"
-            status_tag = "success" if is_success else "error"
+
+            if is_success:
+                status_text = "Success / Accepted"
+                status_tag = "success"
+            else:
+                status_text = "Error / Failed"
+                status_tag = "error"
 
             source_code = job.get("source_code", "") or ""
             output = job.get("output", "") or ""
@@ -746,36 +944,37 @@ class SandboxMockup(tk.Tk):
 
                 ("SOURCE CODE\n", "label"),
                 ("──────────────────────────────\n", "muted"),
-                (source_code.rstrip() + "\n\n" if source_code.strip() else "<empty>\n\n", "code"),
-
-                ("STDOUT\n", "label"),
-                ("──────────────────────────────\n", "muted"),
-                (output.rstrip() + "\n\n" if output.strip() else "<empty>\n\n", "code"),
             ]
 
-            if error.strip():
-                if is_success:
-                    parts.extend([
-                        ("DEBUG LOG\n", "warning"),
-                        ("──────────────────────────────\n", "muted"),
-                        (error.rstrip() + "\n", "warning"),
-                    ])
+            if source_code.strip():
+                parts.append((source_code.rstrip() + "\n\n", "code"))
+            else:
+                parts.append(("<empty>\n\n", "muted"))
+
+            if is_success:
+                parts.extend([
+                    ("STDOUT\n", "label"),
+                    ("──────────────────────────────\n", "muted"),
+                ])
+
+                if output.strip():
+                    parts.append((output.rstrip() + "\n", "code"))
                 else:
-                    parts.extend([
-                        ("ERROR\n", "error"),
-                        ("──────────────────────────────\n", "muted"),
-                        (error.rstrip() + "\n", "error"),
-                    ])
+                    parts.append(("<empty>\n", "muted"))
             else:
                 parts.extend([
-                    ("ERROR\n", "label"),
+                    ("ERROR\n", "error"),
                     ("──────────────────────────────\n", "muted"),
-                    ("<empty>\n", "muted"),
                 ])
+
+                if error.strip():
+                    parts.append((error.rstrip() + "\n", "error"))
+                else:
+                    parts.append(("Unknown error\n", "error"))
 
             set_detail_rich(parts)
 
-        footer = tk.Frame(history_window, bg="#0f172a")
+        footer = tk.Frame(history_window, bg="#0f1115")
         footer.grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 18))
         footer.columnconfigure(0, weight=1)
 
@@ -810,81 +1009,47 @@ class SandboxMockup(tk.Tk):
         return text
 
     def refresh_jobs(self):
-        """更新 Job 狀態監控表格，資料來源為 main.py 的 GET /jobs API。"""
-        try:
-            response = requests.get(f"{API_URL}/jobs", timeout=5)
-            response.raise_for_status()
-            jobs = response.json()
+        self.refresh_containers()
 
-        except requests.exceptions.RequestException as e:
-            self.set_output(
-                "Job 監控更新失敗。\n\n"
-                f"請確認後端 FastAPI 是否已啟動：{API_URL}\n\n"
-                f"錯誤內容：\n{e}"
-            )
-            jobs = []
+    def refresh_containers(self):
+        """清空 Container 監控表格，等待 WebSocket 真實資料。"""
+        if not hasattr(self, "container_table"):
+            return
 
-        current_job_ids = set()
+        for item in self.container_table.get_children():
+            self.container_table.delete(item)
 
-        for job in jobs:
-            job_id = str(job.get("id", "-"))
-            current_job_ids.add(job_id)
+        self.update_monitor_usage(0, 0, "idle")
 
-            values = (
-                job.get("id", "-"),
-                job.get("language", "-"),
-                job.get("status", "-"),
-                self._short_text(job.get("output", "")),
-                self._short_text(job.get("error", "")),
-                job.get("created_at", "-"),
-                job.get("updated_at", "-"),
-            )
-
-            status = job.get("status", "-")
-
-            if self.job_table.exists(job_id):
-                self.job_table.item(job_id, values=values, tags=(status,))
-            else:
-                self.job_table.insert("", "end", iid=job_id, values=values, tags=(status,))
-
-        for item in self.job_table.get_children():
-            if item not in current_job_ids:
-                self.job_table.delete(item)
-
-        self.after(3000, self.refresh_jobs)
-
-    def show_selected_job(self, event=None):
-        selected = self.job_table.selection()
-
+    def show_selected_container(self, event=None):
+        selected = self.container_table.selection() if hasattr(self, "container_table") else []
         if not selected:
             return
 
-        job_id = selected[0]
+        values = self.container_table.item(selected[0], "values")
+        self.set_output(
+            f"Container ID: {values[0]}\n"
+            f"Name: {values[1]}\n"
+            f"Status: {values[2]}\n"
+            f"CPU Usage: {values[3]}\n"
+            f"Memory Usage: {values[4]}\n"
+            f"PID: {values[5]}\n"
+            f"Uptime: {values[6]}\n"
+            f"Limit: {values[7]}\n\n"
+            "目前這區先做 UI 展示，之後接上 sandbox/container 狀態 API 後，"
+            "可以改成顯示真實 container 狀態。"
+        )
 
-        try:
-            response = requests.get(f"{API_URL}/jobs/{job_id}", timeout=5)
-            response.raise_for_status()
-            job = response.json()
+    def show_selected_job(self, event=None):
+        self.show_selected_container(event)
 
-        except requests.exceptions.RequestException as e:
-            self.set_output(f"讀取 Job #{job_id} 詳細資料失敗：\n{e}")
-            return
-
-        self.show_job_result(job)
-
-    # 舊名稱保留成 alias，避免其他程式或舊版流程仍呼叫 refresh_containers 時出錯。
-    def refresh_containers(self):
-        self.refresh_jobs()
-
-    # 舊名稱保留成 alias，避免 create_layout 以外的地方仍呼叫舊函式時出錯。
-    def create_container_monitor_card(self, parent):
-        self.create_job_monitor_card(parent)
+    # create_job_monitor_card / refresh_jobs 保留舊名稱，內部已導到 Container 監控 UI。
 
     def create_monitor_card(self, parent):
         pass
 
     def create_stat_box(self, parent, title, value, column):
-        box = tk.Frame(parent, bg="#020617", highlightbackground="#334155", highlightthickness=1)
+        box = tk.Frame(parent, bg="#0b0d12", highlightbackground="#2a2f3a", highlightthickness=1)
         box.grid(row=0, column=column, sticky="nsew", padx=5)
 
         ttk.Label(box, text=title, style="Small.TLabel").pack(anchor="w", padx=12, pady=(12, 4))
@@ -961,9 +1126,19 @@ class SandboxMockup(tk.Tk):
             response.raise_for_status()
 
             job = response.json()
-            job_id = job["job_id"]
+            job_id = job.get("job_id", job.get("id"))
 
+            if job_id is None:
+                messagebox.showerror("API 錯誤", f"後端沒有回傳 job_id：\n{job}")
+                return
+
+            self.current_job_id = job_id
             self.status_value.config(text="Pending")
+            self.update_monitor_usage(0, 0, "pending")
+
+            for item in self.container_table.get_children():
+                self.container_table.delete(item)
+
             self.set_output(
                 f"程式碼已送出。\n"
                 f"Job ID: {job_id}\n"
@@ -973,9 +1148,13 @@ class SandboxMockup(tk.Tk):
                 f"cpu: {mode_config['cpu']:g} core\n"
                 f"memory: {mode_config['memory']} MB\n"
                 f"timeout: {mode_config['timeout']} s\n\n"
-                f"已透過後端 API 建立任務，等待 sandbox 執行。"
+                f"已透過後端 API 建立任務，等待 sandbox 執行。\n"
+                f"WebSocket 監控連線中..."
             )
+
             self.add_history(f"Job #{job_id} ({language})", "Pending", "--", "API")
+
+            self.connect_monitor_websocket(job_id)
 
             self.after(1000, lambda: self.check_job_result(job_id))
 
@@ -993,20 +1172,20 @@ class SandboxMockup(tk.Tk):
             self.status_value.config(text=status.capitalize())
 
             if status in ["pending", "running"]:
-                self.set_output(
-                    f"Job ID: {job_id}\n"
-                    f"目前狀態：{status}\n\n"
-                    f"等待 sandbox 執行中..."
-                )
+                if status == "running":
+                    self.monitor_state_var.set("running")
+
                 self.after(1000, lambda: self.check_job_result(job_id))
                 return
 
             if status == "done":
+                self.monitor_state_var.set("done")
                 self.show_job_result(job)
                 self.add_history(f"Job #{job_id}", "Done", "--", "Success")
                 return
 
             if status == "error":
+                self.monitor_state_var.set("error")
                 self.show_job_result(job)
                 self.add_history(f"Job #{job_id}", "Error", "--", "Failed")
                 return
@@ -1063,7 +1242,7 @@ class SandboxMockup(tk.Tk):
             (f"{status_text}\n\n", status_tag),
         ]
 
-        # 成功時才顯示 STDOUT
+        # 成功才顯示 STDOUT
         if is_success:
             parts.extend([
                 ("STDOUT\n", "label"),
@@ -1075,7 +1254,7 @@ class SandboxMockup(tk.Tk):
             else:
                 parts.append(("<empty>\n", "muted"))
 
-        # 錯誤時只顯示錯誤原因，不顯示 STDOUT / DEBUG LOG
+        # 失敗只顯示錯誤原因，不顯示 STDOUT / DEBUG LOG
         else:
             parts.extend([
                 ("ERROR\n", "error"),
@@ -1092,6 +1271,168 @@ class SandboxMockup(tk.Tk):
         self.code_text.delete("1.0", "end")
         self.code_text.insert("1.0", text)
 
+    def connect_monitor_websocket(self, job_id):
+        self.current_job_id = job_id
+        self.monitor_state_var.set("connecting")
+
+        if self.monitor_ws is not None:
+            try:
+                self.monitor_ws.close()
+            except Exception:
+                pass
+
+        ws_url = f"ws://127.0.0.1:8000/ws/jobs/{job_id}/monitor"
+
+        def on_open(ws):
+            self.after(0, lambda: self.set_output(
+                f"WebSocket 已連線。\n"
+                f"URL: {ws_url}\n\n"
+                f"等待 sandbox monitor.log 資料..."
+            ))
+            self.after(0, lambda: self.monitor_state_var.set("running"))
+
+        def on_message(ws, message):
+            print("[WS MESSAGE]", message)
+
+            try:
+                data = json.loads(message)
+            except json.JSONDecodeError:
+                print("[WS JSON ERROR]", message)
+                return
+
+            self.after(0, lambda d=data, raw=message: self.apply_monitor_data(d, raw))
+
+        def on_error(ws, error):
+            error_text = str(error)
+
+            # opcode=8 是 WebSocket close frame，通常代表正常關閉，不要顯示成錯誤
+            if "opcode=8" in error_text or "Connection to remote host was lost" in error_text:
+                print("[WS CLOSE FRAME]", error)
+                return
+
+            print("[WS ERROR]", error)
+            self.after(0, lambda: self.monitor_state_var.set("ws error"))
+            self.after(0, lambda: self.set_output(f"WebSocket 錯誤：\n{error}"))
+
+        def on_close(ws, close_status_code, close_msg):
+            print("[WS CLOSED]", close_status_code, close_msg)
+
+            def update_closed_state():
+                current_state = self.monitor_state_var.get()
+
+                if current_state not in ["done", "error"]:
+                    self.monitor_state_var.set("closed")
+
+            self.after(0, update_closed_state)
+
+        self.monitor_ws = websocket.WebSocketApp(
+            ws_url,
+            on_open=on_open,
+            on_message=on_message,
+            on_error=on_error,
+            on_close=on_close,
+        )
+
+        self.monitor_thread = threading.Thread(
+            target=self.monitor_ws.run_forever,
+            daemon=True,
+        )
+        self.monitor_thread.start()
+
+
+    def apply_monitor_data(self, data, raw_message=None):
+        if data.get("status") == "closed":
+            current_state = self.monitor_state_var.get()
+            if current_state not in ["done", "error"]:
+                self.monitor_state_var.set("done")
+
+            self.set_output(
+                f"WebSocket 已關閉。\n\n"
+                f"最後收到資料：\n{raw_message or data}"
+            )
+            return
+
+        self.latest_monitor_data = data
+
+        status = data.get("status", "running")
+        stage = data.get("stage", "-")
+        job_id = data.get("job_id", self.current_job_id)
+
+        memory_kb = float(data.get("memory_kb", 0) or 0)
+
+        # C 端如果還沒送 cpu_percent，CPU 會維持 0，這是正常的
+        cpu_percent = float(data.get("cpu_percent", 0) or 0)
+
+        if "memory_percent" in data:
+            memory_percent = float(data.get("memory_percent", 0) or 0)
+        else:
+            memory_limit_kb = int(self.memory_var.get()) * 1024
+
+            if memory_kb > 0 and memory_limit_kb > 0:
+                memory_percent = (memory_kb / memory_limit_kb) * 100
+            else:
+                memory_percent = 0
+
+        self.update_monitor_usage(cpu_percent, memory_percent, status)
+        self.update_container_monitor_row(data, cpu_percent, memory_percent)
+
+        self.set_output(
+            f"Job ID: {job_id}\n"
+            f"WebSocket 即時監控資料已收到。\n\n"
+            f"stage: {stage}\n"
+            f"status: {status}\n"
+            f"elapsed_ms: {data.get('elapsed_ms', '-')}\n"
+            f"memory_kb: {data.get('memory_kb', '-')}\n"
+            f"memory_percent: {memory_percent:.2f}%\n"
+            f"cpu_percent: {cpu_percent:.2f}%\n\n"
+            f"RAW:\n{raw_message or data}"
+        )
+
+        if stage == "execute" and status == "done":
+            self.monitor_state_var.set("done")
+
+
+    def update_container_monitor_row(self, data, cpu_percent, memory_percent):
+        if not hasattr(self, "container_table"):
+            return
+
+        job_id = str(data.get("job_id", self.current_job_id))
+        status = data.get("status", "-")
+        elapsed_ms = int(data.get("elapsed_ms", 0) or 0)
+        memory_kb = float(data.get("memory_kb", 0) or 0)
+
+        mode_config = self.get_mode_config()
+
+        container_id = f"job_{job_id}"
+        name = f"sandbox_job_{job_id}"
+        cpu_text = f"{cpu_percent:.1f}%"
+        memory_text = f"{memory_kb / 1024:.1f} MB ({memory_percent:.1f}%)"
+        uptime_text = f"{elapsed_ms / 1000:.1f}s"
+        limit_text = f"{mode_config['cpu']:g} core / {mode_config['memory']}MB / {mode_config['timeout']}s"
+
+        values = (
+            container_id,
+            name,
+            status,
+            cpu_text,
+            memory_text,
+            "-",
+            uptime_text,
+            limit_text,
+        )
+
+        if self.container_table.exists(container_id):
+            self.container_table.item(container_id, values=values)
+        else:
+            self.container_table.insert("", "end", iid=container_id, values=values)
+    def update_monitor_usage(self, cpu_percent=0, memory_percent=0, state=None):
+        if hasattr(self, "cpu_gauge"):
+            self.cpu_gauge.set_value(cpu_percent)
+        if hasattr(self, "memory_gauge"):
+            self.memory_gauge.set_value(memory_percent)
+        if state and hasattr(self, "monitor_state_var"):
+            self.monitor_state_var.set(state)
+    
     def run_mock(self):
         self.running = True
         self.status_value.config(text="Running")
@@ -1099,6 +1440,7 @@ class SandboxMockup(tk.Tk):
         self.mem_value.config(text="96 MB")
         self.cpu_bar.config(value=48)
         self.mem_bar.config(value=96)
+        self.update_monitor_usage(48, 96, "running")
 
         mode_config = self.get_mode_config()
         self.set_output(
@@ -1121,6 +1463,7 @@ class SandboxMockup(tk.Tk):
         self.mem_value.config(text="14 MB")
         self.cpu_bar.config(value=12)
         self.mem_bar.config(value=14)
+        self.update_monitor_usage(12, 14, "finished")
 
         self.set_output(
             "Exit code: 0\n\n"
@@ -1139,6 +1482,7 @@ class SandboxMockup(tk.Tk):
         self.mem_value.config(text="0 MB")
         self.cpu_bar.config(value=0)
         self.mem_bar.config(value=0)
+        self.update_monitor_usage(0, 0, "stopped")
 
         self.set_output(
             "程式已被手動停止。\n"
@@ -1155,6 +1499,7 @@ class SandboxMockup(tk.Tk):
         self.mem_value.config(text="0 MB")
         self.cpu_bar.config(value=0)
         self.mem_bar.config(value=0)
+        self.update_monitor_usage(0, 0, "container idle")
         self.set_output("尚未執行程式。")
 
     def load_demo(self, demo_type):
@@ -1207,11 +1552,12 @@ class SandboxMockup(tk.Tk):
             self.set_output("已載入：網路連線失敗 Demo。未來可用 Network Namespace 隔離處理。")
 
         self.status_value.config(text="Idle")
-        self.cpu_value.config(text="12%")
-        self.mem_value.config(text="64 MB")
-        self.cpu_bar.config(value=12)
-        self.mem_bar.config(value=64)
-
+        self.cpu_value.config(text="0%")
+        self.mem_value.config(text="0 MB")
+        self.cpu_bar.config(value=0)
+        self.mem_bar.config(value=0)
+        self.update_monitor_usage(0, 0, "idle")
+        
     def add_history(self, name, status, time_used, memory):
         # 新介面不顯示 log / history；保留函式讓原本的執行流程不用改。
         pass
