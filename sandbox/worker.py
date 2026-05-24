@@ -4,6 +4,7 @@ import json
 import shutil
 from pathlib import Path
 from api_client import *
+from ..logger import log_info, log_warning, log_error, log_exception
 
 def write_code_to_file(code, file_path):
     with open(file_path, "w") as f:
@@ -110,6 +111,7 @@ def process_job(job):
     source_file.chmod(0o666)
 
     print(f"[Worker] Write code -> {source_file}")
+    log_info("Worker", f"Write code -> {source_file}")
 
     update_job_status(job_id, "running")
 
@@ -135,6 +137,7 @@ def main():
                 continue
 
             print(f"\n[Worker] Found job {job['id']}. Processing...")
+            log_info("Worker", "Found job {job['id']}.")
             process_job(job)
 
     except KeyboardInterrupt:

@@ -15,6 +15,7 @@
 #include "sandbox_seccomp.h"
 #include "payload.h"
 #include "result_writer.h"
+#include "logger.h"
 
 #define STACK_SIZE (1024 * 1024)
 
@@ -127,6 +128,7 @@ int run_sandboxed_stage(int (*child_func)(void *),const char *stage_name,StageRe
 
     if (pid == -1) {
         fprintf(stderr, "[Parent] clone %s failed\n", stage_name);
+        logger_log(LOG_ERROR, "Parent", "Clone %s failed.", stage_name);
         return -1;
     }
 
@@ -250,9 +252,11 @@ int main(int argc, char *argv[]){
 
     fprintf(stderr, "\n========== Sandbox ==========\n");
     fprintf(stderr, "[Parent] Managing Job ID: %s\n", current_job_id);
+    logger_log(LOG_INFO, "Parent", "Managing Job ID: %s", current_job_id);
 
     if(prepare_rootfs(current_job_id) != 0){
         fprintf(stderr, "[Parent] Rootfs preparation failed\n");
+        logger_log(LOG_ERROR, "Parent", "Rootfs preparation failed. Job ID: %s", current_job_id);
         return EXIT_FAILURE;
     }
     prepare_test_source(current_job_id);
@@ -263,6 +267,7 @@ int main(int argc, char *argv[]){
     int compile_status = run_sandboxed_stage(compile_child_func, "compile", &comp_res);
     if(compile_status == -1 || !WIFEXITED(compile_status) || WEXITSTATUS(compile_status) != 0){
         fprintf(stderr, "[Parent] Compile stage failed\n");
+        logger_log(LOG_ERROR, "Parent", "Compile stage failed. Job ID: %s", current_job_id);
         write_combined_json(current_job_id, &comp_res, &exec_res);
         cleanup_container_filesystem(current_job_id);
         return EXIT_FAILURE;
@@ -281,6 +286,7 @@ int main(int argc, char *argv[]){
     print_sandbox_result(exec_status);
     cleanup_container_filesystem(current_job_id);
     fprintf(stderr, "[Parent] All stages completed successfully.\n");
+    logger_log(LOG_INFO, "Parent", "All stages completed successfully. Job ID: %s", current_job_id);
     
     return EXIT_SUCCESS;
 }

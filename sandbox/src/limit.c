@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 
 #include "limit.h"
+#include "logger.h"
 #include <fcntl.h>
 #include <errno.h>
 
@@ -57,16 +58,20 @@ void setup_resource_limits(){
 
     // CPU time limit
     set_limit(RLIMIT_CPU,CPU_LIMIT,CPU_LIMIT+1);
+    logger_log(LOG_SECURITY, "Resource", "Set CPU time limit to %s.", CPU_LIMIT);
 
     // Virtual memory limit
     set_limit(RLIMIT_AS,MEMORY_LIMIT,MEMORY_LIMIT);
-
+    logger_log(LOG_SECURITY, "Resource", "Set memory limit to %s.", MEMORY_LIMIT);
     // File descriptor limit
     set_limit(RLIMIT_NOFILE,NOFILE_LIMIT,NOFILE_LIMIT);
+    logger_log(LOG_SECURITY, "Resource", "Set file desciptor limit to %s.", NOFILE_LIMIT);
 
     set_limit(RLIMIT_NPROC,NPROC_LIMIT,NPROC_LIMIT);
+    logger_log(LOG_SECURITY, "Resource", "Set CPUs to %s.", NPROC_LIMIT);
 
     set_limit(RLIMIT_FSIZE,FILESIZE_LIMIT,FILESIZE_LIMIT);
+    logger_log(LOG_SECURITY, "Resource", "Set file size limit to %s.", FILESIZE_LIMIT);
 
     printf("[Sandbox] Resource limits applied\n");
 }
@@ -93,6 +98,7 @@ void setup_cgroup(pid_t pid){
     write_cgroup_file("cgroup.procs",pid_str);
 
     printf("[Parent] cgroup configured\n");
+    logger_log(LOG_INFO, "Parent", "cgroup configured. PID: %s", pid);
 }
 
 void print_resource_usage(void){

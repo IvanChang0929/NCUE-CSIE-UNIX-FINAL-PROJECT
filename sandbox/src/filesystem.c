@@ -10,6 +10,7 @@
 #include <errno.h>
 
 #include "filesystem.h"
+#include "logger.c"
 
 #define BASE_IMAGE_DIR "./sandbox/images/base_rootfs"
 
@@ -89,6 +90,7 @@ int prepare_rootfs(const char *job_id){
     }
 
     printf("[Parent] Runtime directories ready\n");
+    logger_log(LOG_INFO, "Parent", "Runtime directories ready. Job ID: %s", job_id);
 
     return 0;
 }
@@ -111,6 +113,7 @@ int mount_secure_container(const char *job_id) {
     snprintf(overlay_options, sizeof(overlay_options), "lowerdir=%s,upperdir=%s,workdir=%s", BASE_IMAGE_DIR, upper_dir, work_dir);
     if (mount("overlay", merged_dir, "overlay", 0, overlay_options) == -1) {
         perror("[Parent] OverlayFS mount failed");
+        logger_log(LOG_ERROR, "Parent", "OverlayFS mount failed. Job ID: %s", job_id);
         return -1;
     }
 
@@ -124,6 +127,7 @@ int mount_secure_container(const char *job_id) {
         snprintf(host_bin, sizeof(host_bin), "/usr/bin/%s", binaries[i]);
         if (mount(host_bin, target, NULL, MS_BIND | MS_RDONLY, NULL) == -1) {
             perror("[Parent] Mount GCC binary failed");
+            logger_log(LOG_ERROR, "Parent", "Mount GCC binary failed. Job ID: %s", job_id);
             return -1;
         }
     }
@@ -145,10 +149,12 @@ int mount_secure_container(const char *job_id) {
 
     if (mount(host_job_dir, container_app_dir, NULL, MS_BIND, NULL) == -1) {
         perror("[Parent] Volume mount bind failed");
+        logger_log(LOG_ERROR, "Parent", "Volume mount bind failed. Job ID: %s", job_id);
         return -1;
     }
 
     printf("[Parent] Container filesystem stack for Job %s is perfectly ready!\n", job_id);
+    logger_log(LOG_INFO, "Parent", "Container filesystem stack is ready. Job ID: %s", job_id);
     return 0;
 }
 
@@ -198,7 +204,7 @@ int mount_overlayfs(const char *job_id){
     }
 
     printf("[Parent] OverlayFS mounted\n");
-
+    logger_log(LOG_INFO, "Parent", "OverlayFS mounted. Job ID: %s", job_id);
     return 0;
 }
 
@@ -239,6 +245,7 @@ void setup_pivot_root(const char *job_id){
     }
 
     printf("[Sandbox] pivot_root success\n");
+    logger_log(LOG_INFO, "Sandbox", "Pivot_root success. Job ID: %s", job_id);
 
     if(chdir("/") == -1){
         perror("chdir");
@@ -269,6 +276,7 @@ void setup_pivot_root(const char *job_id){
         "[Sandbox] Container rootfs ready for Job %s\n",
         job_id
     );
+    logger_log(LOG_INFO, "Sandbox", "Container rootfs ready. Job ID: %s", job_id);
 }
 
 int cleanup_container_filesystem(const char *job_id){
@@ -294,6 +302,7 @@ int cleanup_container_filesystem(const char *job_id){
             "[Cleanup] Job %s runtime removed.\n",
             job_id
         );
+        logger_log(LOG_INFO, "Cleanup", "Runtime removed. Job ID: %s", job_id);
     }
 
     return 0;

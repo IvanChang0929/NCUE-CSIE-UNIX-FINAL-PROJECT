@@ -7,6 +7,7 @@
 #include <sys/mount.h>
 
 #include "namespace.h"
+#include "logger.h"
 
 //之後需要網路在寫 (目前預設不需要網路)
 
@@ -16,6 +17,7 @@ void setup_mount_namespace(){
         exit(1);
     }
     printf("[Sandbox] Mount propagation isolated\n");
+    logger_log(LOG_INFO, "Sandbox", "Mount propagation isolated.");
 }
 
 static void write_file(const char *path, const char *data) {
@@ -69,4 +71,5 @@ void setup_uid_gid_map(pid_t pid){
         host_uid,
         host_gid
     );
+    logger_log(LOG_INFO, "Parent", "UID/GID mapping configured (container root -> host %d:%d)", host_uid, host_gid);
 }

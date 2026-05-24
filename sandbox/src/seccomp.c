@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "sandbox_seccomp.h"
+#include "logger.h"
 
 #define DENY(syscall)                                      \
     do {                                                   \
@@ -164,4 +165,5 @@ void setup_seccomp(void){
     printf(
         "[Sandbox] Docker-like seccomp blacklist enabled\n"
     );
+    logger_log(LOG_SECURITY, "Sandbpx", "seccomp blacklist enabled.");
 }

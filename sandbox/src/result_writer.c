@@ -2,6 +2,7 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include "result_writer.h"
+#include "logger.h"
 
 static void escape_json(const char *src, char *dest){
     while(*src){
@@ -70,4 +71,5 @@ void write_combined_json(const char *job_id, StageResult *comp, StageResult *exe
     fclose(fjson);
     
     fprintf(stderr, "[Parent] Combined JSON saved to %s\n", json_path);
+    logger_log(LOG_INFO, "Parent", "Combined JSON saved to %s", json_path);
 }

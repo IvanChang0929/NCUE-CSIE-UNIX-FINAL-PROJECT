@@ -3,7 +3,7 @@
 #include <unistd.h>
 #include "payload.h"
 #include "sandbox_seccomp.h"
-
+#include "logger.h"
 extern char **environ;
 
 int compile_program(void){
@@ -13,10 +13,12 @@ int compile_program(void){
 
     if(status != 0){
         fprintf(stderr, "[Sandbox] Compilation failed\n");
+        logger_log(LOG_ERROR, "Sandbox", "Compilation failed.");
         return -1;
     }
 
     fprintf(stderr, "[Sandbox] Compilation successful\n");
+    logger_log(LOG_ERROR, "Sandbox", "Compilation failed.");
     return 0;
 }
 
@@ -27,7 +29,10 @@ void execute_program(void){
     
     char *exec_args[] = {"/app/user_program", NULL};
     execve("/app/user_program", exec_args, environ);
+    
 
     perror("execve");
+    logger_log(LOG_ERROR, "Sandbox", "Execution failed.");
     exit(1);
+
 }
