@@ -419,6 +419,15 @@ class SandboxMockup(tk.Tk):
             pady=14,
         )
         self.output_text.grid(row=1, column=0, sticky="nsew", padx=18, pady=(0, 18))
+
+        self.output_text.tag_config("title", foreground="#ffffff", font=("Menlo", 14, "bold"))
+        self.output_text.tag_config("label", foreground="#38bdf8", font=("Menlo", 12, "bold"))
+        self.output_text.tag_config("success", foreground="#22c55e", font=("Menlo", 12, "bold"))
+        self.output_text.tag_config("error", foreground="#ef4444", font=("Menlo", 12, "bold"))
+        self.output_text.tag_config("warning", foreground="#facc15", font=("Menlo", 12, "bold"))
+        self.output_text.tag_config("muted", foreground="#94a3b8")
+        self.output_text.tag_config("code", foreground="#d1fae5")
+
         self.set_output("尚未執行程式。")
 
     def create_job_monitor_card(self, parent):
@@ -500,6 +509,11 @@ class SandboxMockup(tk.Tk):
         x_scrollbar.grid(row=1, column=0, sticky="ew")
         self.job_table.configure(xscrollcommand=x_scrollbar.set)
 
+        self.job_table.tag_configure("done", foreground="#22c55e")
+        self.job_table.tag_configure("error", foreground="#ef4444")
+        self.job_table.tag_configure("running", foreground="#facc15")
+        self.job_table.tag_configure("pending", foreground="#38bdf8")
+
         self.job_table.bind("<<TreeviewSelect>>", self.show_selected_job)
 
     def open_history_window(self):
@@ -575,6 +589,11 @@ class SandboxMockup(tk.Tk):
             history_table.heading(col, text=headings[col])
             history_table.column(col, width=widths[col], anchor="w")
 
+        history_table.tag_configure("done", foreground="#22c55e")
+        history_table.tag_configure("error", foreground="#ef4444")
+        history_table.tag_configure("running", foreground="#facc15")
+        history_table.tag_configure("pending", foreground="#38bdf8")
+
         history_table.grid(row=0, column=0, sticky="nsew", padx=(12, 0), pady=12)
 
         y_scrollbar = ttk.Scrollbar(content, orient="vertical", command=history_table.yview)
@@ -610,6 +629,15 @@ class SandboxMockup(tk.Tk):
             pady=12,
         )
         detail_text.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+
+        detail_text.tag_config("title", foreground="#ffffff", font=("Menlo", 13, "bold"))
+        detail_text.tag_config("label", foreground="#38bdf8", font=("Menlo", 11, "bold"))
+        detail_text.tag_config("success", foreground="#22c55e", font=("Menlo", 11, "bold"))
+        detail_text.tag_config("error", foreground="#ef4444", font=("Menlo", 11, "bold"))
+        detail_text.tag_config("warning", foreground="#facc15", font=("Menlo", 11, "bold"))
+        detail_text.tag_config("muted", foreground="#94a3b8")
+        detail_text.tag_config("code", foreground="#d1fae5")
+
         detail_text.insert("1.0", "請選擇一筆 Job 歷史紀錄。")
         detail_text.config(state="disabled")
 
@@ -617,6 +645,19 @@ class SandboxMockup(tk.Tk):
             detail_text.config(state="normal")
             detail_text.delete("1.0", "end")
             detail_text.insert("1.0", text)
+            detail_text.config(state="disabled")
+
+
+        def set_detail_rich(parts):
+            detail_text.config(state="normal")
+            detail_text.delete("1.0", "end")
+
+            for text, tag in parts:
+                if tag:
+                    detail_text.insert("end", text, tag)
+                else:
+                    detail_text.insert("end", text)
+
             detail_text.config(state="disabled")
 
         def load_history():
@@ -638,6 +679,8 @@ class SandboxMockup(tk.Tk):
 
             for job in jobs:
                 job_id = str(job.get("id", "-"))
+
+                status = job.get("status", "-")
                 history_table.insert(
                     "",
                     "end",
@@ -645,12 +688,13 @@ class SandboxMockup(tk.Tk):
                     values=(
                         job.get("id", "-"),
                         job.get("language", "-"),
-                        job.get("status", "-"),
+                        status,
                         self._short_text(job.get("output", "")),
                         self._short_text(job.get("error", "")),
                         job.get("created_at", "-"),
                         job.get("updated_at", "-"),
                     ),
+                    tags=(status,),
                 )
 
             set_detail(f"共讀取 {len(jobs)} 筆 Job 歷史紀錄。請選擇一筆查看詳細內容。")
@@ -672,19 +716,64 @@ class SandboxMockup(tk.Tk):
                 set_detail(f"讀取 Job #{job_id} 詳細資料失敗：\n{e}")
                 return
 
-            set_detail(
-                f"Job ID: {job.get('id', '-')}\n"
-                f"Language: {job.get('language', '-')}\n"
-                f"Status: {job.get('status', '-')}\n"
-                f"Created At: {job.get('created_at', '-')}\n"
-                f"Updated At: {job.get('updated_at', '-')}\n\n"
-                "----- SOURCE CODE -----\n"
-                f"{job.get('source_code', '')}\n\n"
-                "----- STDOUT -----\n"
-                f"{job.get('output', '')}\n\n"
-                "----- STDERR -----\n"
-                f"{job.get('error', '')}"
-            )
+            status = job.get("status", "-")
+            is_success = status == "done"
+            status_text = "Success / Accepted" if is_success else "Error / Failed"
+            status_tag = "success" if is_success else "error"
+
+            source_code = job.get("source_code", "") or ""
+            output = job.get("output", "") or ""
+            error = job.get("error", "") or ""
+
+            parts = [
+                ("Job 詳細內容\n", "title"),
+                ("──────────────────────────────\n\n", "muted"),
+
+                ("Job ID     : ", "label"),
+                (f"{job.get('id', '-')}\n", None),
+
+                ("Language   : ", "label"),
+                (f"{job.get('language', '-')}\n", None),
+
+                ("Status     : ", "label"),
+                (f"{status_text}\n", status_tag),
+
+                ("Created At : ", "label"),
+                (f"{job.get('created_at', '-')}\n", None),
+
+                ("Updated At : ", "label"),
+                (f"{job.get('updated_at', '-')}\n\n", None),
+
+                ("SOURCE CODE\n", "label"),
+                ("──────────────────────────────\n", "muted"),
+                (source_code.rstrip() + "\n\n" if source_code.strip() else "<empty>\n\n", "code"),
+
+                ("STDOUT\n", "label"),
+                ("──────────────────────────────\n", "muted"),
+                (output.rstrip() + "\n\n" if output.strip() else "<empty>\n\n", "code"),
+            ]
+
+            if error.strip():
+                if is_success:
+                    parts.extend([
+                        ("DEBUG LOG\n", "warning"),
+                        ("──────────────────────────────\n", "muted"),
+                        (error.rstrip() + "\n", "warning"),
+                    ])
+                else:
+                    parts.extend([
+                        ("ERROR\n", "error"),
+                        ("──────────────────────────────\n", "muted"),
+                        (error.rstrip() + "\n", "error"),
+                    ])
+            else:
+                parts.extend([
+                    ("ERROR\n", "label"),
+                    ("──────────────────────────────\n", "muted"),
+                    ("<empty>\n", "muted"),
+                ])
+
+            set_detail_rich(parts)
 
         footer = tk.Frame(history_window, bg="#0f172a")
         footer.grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 18))
@@ -751,10 +840,12 @@ class SandboxMockup(tk.Tk):
                 job.get("updated_at", "-"),
             )
 
+            status = job.get("status", "-")
+
             if self.job_table.exists(job_id):
-                self.job_table.item(job_id, values=values)
+                self.job_table.item(job_id, values=values, tags=(status,))
             else:
-                self.job_table.insert("", "end", iid=job_id, values=values)
+                self.job_table.insert("", "end", iid=job_id, values=values, tags=(status,))
 
         for item in self.job_table.get_children():
             if item not in current_job_ids:
@@ -779,23 +870,7 @@ class SandboxMockup(tk.Tk):
             self.set_output(f"讀取 Job #{job_id} 詳細資料失敗：\n{e}")
             return
 
-        self.set_output(
-            f"Job ID: {job.get('id', '-')}\n"
-            f"Language: {job.get('language', '-')}\n"
-            f"Status: {job.get('status', '-')}\n"
-            f"Mode: {job.get('mode', '-')}\n"
-            f"CPU: {job.get('cpu', '-')}\n"
-            f"Memory: {job.get('memory', '-')} MB\n"
-            f"Timeout: {job.get('timeout', '-')} s\n"
-            f"Created At: {job.get('created_at', '-')}\n"
-            f"Updated At: {job.get('updated_at', '-')}\n\n"
-            "----- SOURCE CODE -----\n"
-            f"{job.get('source_code', '')}\n\n"
-            "----- STDOUT -----\n"
-            f"{job.get('output', '')}\n\n"
-            "----- STDERR -----\n"
-            f"{job.get('error', '')}"
-        )
+        self.show_job_result(job)
 
     # 舊名稱保留成 alias，避免其他程式或舊版流程仍呼叫 refresh_containers 時出錯。
     def refresh_containers(self):
@@ -927,26 +1002,12 @@ class SandboxMockup(tk.Tk):
                 return
 
             if status == "done":
-                self.set_output(
-                    f"Job ID: {job_id}\n"
-                    f"狀態：done\n\n"
-                    f"----- STDOUT -----\n"
-                    f"{job['output']}\n"
-                    f"----- STDERR -----\n"
-                    f"{job['error']}"
-                )
+                self.show_job_result(job)
                 self.add_history(f"Job #{job_id}", "Done", "--", "Success")
                 return
 
             if status == "error":
-                self.set_output(
-                    f"Job ID: {job_id}\n"
-                    f"狀態：error\n\n"
-                    f"----- STDOUT -----\n"
-                    f"{job['output']}\n"
-                    f"----- STDERR -----\n"
-                    f"{job['error']}"
-                )
+                self.show_job_result(job)
                 self.add_history(f"Job #{job_id}", "Error", "--", "Failed")
                 return
 
@@ -959,6 +1020,74 @@ class SandboxMockup(tk.Tk):
         self.output_text.insert("1.0", text)
         self.output_text.config(state="disabled")
 
+    def set_output_rich(self, parts):
+        self.output_text.config(state="normal")
+        self.output_text.delete("1.0", "end")
+
+        for text, tag in parts:
+            if tag:
+                self.output_text.insert("end", text, tag)
+            else:
+                self.output_text.insert("end", text)
+
+        self.output_text.config(state="disabled")
+
+
+    def show_job_result(self, job):
+        job_id = job.get("id", "-")
+        language = job.get("language", "-")
+        status = job.get("status", "-")
+        output = job.get("output", "") or ""
+        error = job.get("error", "") or ""
+
+        is_success = status == "done"
+
+        if is_success:
+            status_text = "Success / Accepted"
+            status_tag = "success"
+        else:
+            status_text = "Error / Failed"
+            status_tag = "error"
+
+        parts = [
+            ("執行結果\n", "title"),
+            ("──────────────────────────────\n\n", "muted"),
+
+            ("Job ID   : ", "label"),
+            (f"{job_id}\n", None),
+
+            ("Language : ", "label"),
+            (f"{language}\n", None),
+
+            ("Status   : ", "label"),
+            (f"{status_text}\n\n", status_tag),
+        ]
+
+        # 成功時才顯示 STDOUT
+        if is_success:
+            parts.extend([
+                ("STDOUT\n", "label"),
+                ("──────────────────────────────\n", "muted"),
+            ])
+
+            if output.strip():
+                parts.append((output.rstrip() + "\n", "code"))
+            else:
+                parts.append(("<empty>\n", "muted"))
+
+        # 錯誤時只顯示錯誤原因，不顯示 STDOUT / DEBUG LOG
+        else:
+            parts.extend([
+                ("ERROR\n", "error"),
+                ("──────────────────────────────\n", "muted"),
+            ])
+
+            if error.strip():
+                parts.append((error.rstrip() + "\n", "error"))
+            else:
+                parts.append(("Unknown error\n", "error"))
+
+        self.set_output_rich(parts)
     def set_code(self, text):
         self.code_text.delete("1.0", "end")
         self.code_text.insert("1.0", text)

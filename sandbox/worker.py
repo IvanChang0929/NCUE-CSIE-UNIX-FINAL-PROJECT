@@ -6,6 +6,15 @@ from pathlib import Path
 from api_client import *
 import os
 
+def print_job_start(job_id):
+    print()
+    print(f"[JOB {job_id}] Preparing")
+
+
+def print_job_step(label, value, is_last=False):
+    branch = "└─" if is_last else "├─"
+    print(f"  {branch} {label:<8}: {value}")
+
 def init_workspace():
     base_dir = Path("/tmp/sandbox")
     if not base_dir.exists():
@@ -95,34 +104,26 @@ def analyze_verdict(sandbox_result):
 def process_job(job):
     job_id = job["id"]
     code = job["code"]
-    uid = os.getuid()
-    gid = os.getgid()
 
     workdir = Path(f"/tmp/sandbox/job_{job_id}")
 
     app_dir = workdir / "app"
     app_dir.mkdir(parents=True, exist_ok=True)
-    os.chown(app_dir, uid, gid)
-    app_dir.chmod(0o755)
 
     source_file = app_dir / "main.c"
     write_code_to_file(code, source_file)
-    os.chown(source_file, uid, gid)
-    source_file.chmod(0o644)
 
-    print(f"[Worker] Write code -> {source_file}")
+    print_job_start(job_id)
+    print_job_step("Source", source_file)
 
     update_job_status(job_id, "running")
+    print_job_step("API", "status -> running")
 
-    # 1. 執行沙盒並取得原始 JSON
     result = run_job_with_sandbox(job_id)
-    
-    # 2. 判斷狀態
+
     verdict = analyze_verdict(result)
-    result["verdict"] = verdict
-    print(f"[Worker] Job {job_id} Verdict -> {verdict}")
-    
-    # 3. 將包含 verdict 的完整資訊上傳給後端 API
+    print_job_step("Verdict", verdict, is_last=True)
+
     update_job_result(job_id, result)
 
 def main():
@@ -137,7 +138,6 @@ def main():
                 time.sleep(1)
                 continue
 
-            print(f"\n[Worker] Found job {job['id']}. Processing...")
             process_job(job)
 
     except KeyboardInterrupt:
