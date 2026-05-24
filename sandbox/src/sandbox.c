@@ -12,6 +12,7 @@
 #include <sys/wait.h>
 #include <sys/resource.h>
 #include <signal.h>
+#include <prctl.h>
 
 #include "limit.h"
 #include "namespace.h"
@@ -19,6 +20,7 @@
 #include "sandbox_seccomp.h"
 #include "payload.h"
 #include "result_writer.h"
+
 
 
 #define TIME_LIMIT_SEC 5
@@ -183,6 +185,7 @@ int execute_child_func(void *arg){
 
         if (setgid(1000) == -1) { perror("setgid failed"); exit(1); }
         if (setuid(1000) == -1) { perror("setuid failed"); exit(1); }
+        prctl(PR_SET_PDEATHSIG, SIGKILL);
 
         execute_program();
 
@@ -249,7 +252,6 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
     size_t err_total = 0;
     ssize_t n;
     
-    // ▼ 新增：用來記錄是否因為超時而被外層砍掉
     int is_timeout = 0; 
 
     struct rusage usage; 
@@ -285,10 +287,7 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
         if (elapsed > TIME_LIMIT_SEC) {
             fprintf(stderr, "\n[Parent] Time Limit Exceeded (Wall-clock timeout)\n");
             kill(pid, SIGKILL); 
-            
-            // ▼ 標記超時發生
             is_timeout = 1; 
-            
             wait4(pid, &status, 0, &usage);
             break;
         }
@@ -296,7 +295,9 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
         usleep(10000); 
     }
 
-    // 收尾：讀取剩下的輸出
+    fcntl(pipes.stdout_pipe[0], F_SETFL, fcntl(pipes.stdout_pipe[0], F_GETFL) & ~O_NONBLOCK);
+    fcntl(pipes.stderr_pipe[0], F_SETFL, fcntl(pipes.stderr_pipe[0], F_GETFL) & ~O_NONBLOCK);
+
     while (out_total < sizeof(res->stdout_buf) - 1) {
         n = read(pipes.stdout_pipe[0], res->stdout_buf + out_total, sizeof(res->stdout_buf) - out_total - 1);
         if (n > 0) out_total += n;
@@ -327,6 +328,8 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
     if(WIFEXITED(status)){
         int ext_code = WEXITSTATUS(status);
         
+        res->exit_code = ext_code;
+
         if (ext_code > 128) {
             int sig = ext_code - 128;
             fprintf(stderr, "[Parent DEBUG] 判定結果：被 PID 1 代理回報信號轟殺 (Translated Signal)\n");
@@ -369,22 +372,19 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
         }else{
             fprintf(stderr, "[Parent DEBUG] 判定結果：子進程是【自己結束】的 (Normal Exit)\n");
             fprintf(stderr, "[Parent DEBUG] 實際的 Exit Code = %d\n", ext_code);
-            res->exit_code = ext_code;
+            
+            if (ext_code != 0) {
+                snprintf(res->status_message, sizeof(res->status_message), "Compile Error");
+            } else {
+                snprintf(res->status_message, sizeof(res->status_message), "Success");
+            }
         }
     } else if(WIFSIGNALED(status)){
-
         int sig = WTERMSIG(status);
+        res->exit_code = 128 + sig; 
 
-        fprintf(stderr,
-            "[Parent DEBUG] 判定結果：子進程是被【核心信號轟殺】的 (Signaled)\n");
-
-        fprintf(stderr,
-            "[Parent DEBUG] 殺死它的 Signal 數字 = %d\n",
-            sig);
-
-        // ==============================
-        // ▼ 針對 Timeout 被外層殺死，或者是 OOM 觸發的精準特判
-        // ==============================
+        fprintf(stderr, "[Parent DEBUG] 判定結果：子進程是被【核心信號轟殺】的 (Signaled)\n");
+        fprintf(stderr, "[Parent DEBUG] 殺死它的 Signal 數字 = %d\n", sig);
 
         if(sig == SIGXFSZ){
             fprintf(stderr, "[Parent] Output Limit Exceeded (SIGXFSZ)\n");
@@ -392,7 +392,6 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
             snprintf(res->status_message, sizeof(res->status_message), "Output Limit Exceeded (SIGXFSZ)");
         }
         else if(sig == SIGKILL){
-            // ▼ 透過旗標分流：時間超時 (TLE) 或是 記憶體爆掉 (MLE/OOM)
             if (is_timeout) {
                 fprintf(stderr, "[Parent] Time Limit Exceeded (TLE)\n");
                 res->exit_code = 137;
@@ -434,6 +433,7 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
     }
     fprintf(stderr, "========================================\n\n");
 
+    // 這裡會把編譯期拿到的錯誤訊息直接倒回終端機，讓 Python Worker 端可以即時收到並顯示
     if (res->stdout_buf[0] != '\0') fprintf(stderr, "%s", res->stdout_buf);
     if (res->stderr_buf[0] != '\0') fprintf(stderr, "%s", res->stderr_buf);
 
@@ -474,6 +474,13 @@ int main(int argc, char *argv[]){
     fprintf(stderr, "-------------------------------- Compile stage finished ----------------------------------\n");
 
     int exec_status = run_sandboxed_stage(execute_child_func, "execute", &exec_res);
+
+    char cp_res_cmd[1024];
+    snprintf(cp_res_cmd, sizeof(cp_res_cmd), 
+             "mkdir -p ./sandbox/result/job_%s && cp /tmp/sandbox/job_%s/work/output.txt ./sandbox/result/job_%s/output.txt 2>/dev/null", 
+             current_job_id, current_job_id, current_job_id);
+    system(cp_res_cmd);
+
     write_combined_json(current_job_id, &comp_res, &exec_res);
 
     if(exec_status == -1){
