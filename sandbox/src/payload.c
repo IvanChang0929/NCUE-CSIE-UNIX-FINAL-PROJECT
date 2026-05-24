@@ -44,13 +44,11 @@ int compile_program(void){
 
 void execute_program(void){
 
-    fprintf(stderr,
-        "[Sandbox] Dropping privileges...\n");
+    printf("[Sandbox] Dropping privileges...\n");
 
     setup_seccomp();
 
-    fprintf(stderr,
-        "[Sandbox] Executing user program...\n");
+    printf("[Sandbox] Executing user program...\n");
 
     if(strcmp(current_language, "c") == 0){
 

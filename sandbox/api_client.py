@@ -21,10 +21,13 @@ def get_pending_job():
 
     return {
         "id": job["id"],
+        "language": job.get("language", "c"),
         "code": job["source_code"],
-        "language": job["language"]
+        "mode": job.get("mode", "basic"),
+        "cpu": job.get("cpu_limit", 1.0),
+        "memory": job.get("memory_limit", 256),
+        "timeout": job.get("timeout_limit", 10),
     }
-
 
 def update_job_status(job_id, status):
     """
@@ -77,7 +80,7 @@ def update_job_result(job_id, sandbox_result):
     execute_stdout = execute_result.get("stdout", "")
     execute_stderr = execute_result.get("stderr", "")
     
-    # ▼ 新增：從 JSON 中抓取 status_message，預設為 Normal Exit
+    # 從 JSON 中抓取 status_message，預設為 Normal Exit
     status_message = execute_result.get("status_message", "Normal Exit")
 
     # 編譯失敗

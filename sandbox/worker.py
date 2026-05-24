@@ -44,7 +44,7 @@ def get_language_config(language):
     return runtimes[language]
 
 
-def run_job_with_sandbox(job_id, language):
+def run_job_with_sandbox(job_id, language, cpu, memory, timeout):
     result_dir = Path(
         f"./sandbox/result/job_{job_id}"
     )
@@ -54,7 +54,10 @@ def run_job_with_sandbox(job_id, language):
                 "sudo",
                 "./sandbox/build/sandbox",
                 str(job_id),
-                language
+                str(language),
+                str(cpu),
+                str(memory),
+                str(timeout),
             ],
             capture_output=True,
             text=True
@@ -91,6 +94,9 @@ def process_job(job):
     job_id = job["id"]
     code = job["code"]
     language = job["language"]
+    cpu = job.get("cpu", 1.0)
+    memory = job.get("memory", 256)
+    timeout = job.get("timeout", 10)
 
     runtime = get_language_config(language)
 
@@ -120,11 +126,13 @@ def process_job(job):
 
     print_job_step("Source",source_file) 
 
+    print_job_step("Limit", f"{cpu} core / {memory} MB / {timeout} s")
+
     update_job_status(job_id, "running")
 
     print_job_step("API","status -> running")
 
-    result = run_job_with_sandbox(job_id,language)
+    result = run_job_with_sandbox(job_id, language, cpu, memory, timeout)
 
     print(f"[Worker] Job {job_id} Sandbox Execution Finished.")
 

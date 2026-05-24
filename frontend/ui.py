@@ -109,6 +109,11 @@ class SandboxMockup(tk.Tk):
         self.monitor_thread = None
         self.current_job_id = None
         self.latest_monitor_data = {}
+        self.resource_records = {}
+        self.current_peak_cpu = 0.0
+        self.current_peak_memory_percent = 0.0
+        self.current_peak_memory_kb = 0.0
+        self.current_runtime_ms = 0
 
         self.mode_button_colors = {
             "basic": {"bg": "#5f8f78", "hover": "#507864"},
@@ -186,10 +191,16 @@ class SandboxMockup(tk.Tk):
 
         style.configure(
             "TCombobox",
-            fieldbackground="#0b0d12",
-            background="#20242d",
-            foreground="#f8fafc",
-            arrowcolor="#f8fafc",
+            fieldbackground="#f8fafc",
+            background="#f8fafc",
+            foreground="#000000",
+            arrowcolor="#000000",
+        )
+
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", "#f8fafc")],
+            foreground=[("readonly", "#000000")],
         )
 
         style.configure(
@@ -221,8 +232,8 @@ class SandboxMockup(tk.Tk):
 
         main.columnconfigure(0, weight=1, uniform="top")
         main.columnconfigure(1, weight=1, uniform="top")
-        main.rowconfigure(0, weight=3)
-        main.rowconfigure(1, weight=2)
+        main.rowconfigure(0, weight=2)
+        main.rowconfigure(1, weight=2, minsize=240)
 
         self.create_editor_card(main)
         self.create_output_card(main)
@@ -261,7 +272,7 @@ class SandboxMockup(tk.Tk):
 
         tk.Label(
             title_row,
-            text="Sandbox 資源監控",
+            text="本次執行總覽",
             bg="#171a21",
             fg="#f8fafc",
             font=("Arial", 13, "bold"),
@@ -333,7 +344,9 @@ class SandboxMockup(tk.Tk):
             state="readonly",
         )
         language_box.grid(row=0, column=1, sticky="e")
-
+        language_box.option_add("*TCombobox*Listbox.foreground", "#000000")
+        language_box.option_add("*TCombobox*Listbox.background", "#f8fafc")
+        
         self.code_text = tk.Text(
             card,
             bg="#0b0d12",
@@ -635,11 +648,11 @@ class SandboxMockup(tk.Tk):
         header.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 10))
         header.columnconfigure(0, weight=1)
 
-        ttk.Label(header, text="Container 監控", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(header, text="Container 資源紀錄", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
 
         tk.Label(
             header,
-            text="UI preview：之後可接 sandbox/container 狀態 API",
+            text="執行中即時更新；執行結束後保留本次資源使用摘要。",
             bg="#171a21",
             fg="#9aa3af",
             font=("Arial", 10),
@@ -650,20 +663,20 @@ class SandboxMockup(tk.Tk):
 
         ttk.Button(
             monitor_actions,
-            text="重新整理",
+            text="清空資源紀錄",
             style="Secondary.TButton",
-            command=self.refresh_containers,
+            command=self.clear_resource_records,
         ).pack(side="left")
 
         columns = (
-            "container_id",
-            "name",
+            "job_id",
             "status",
-            "cpu",
-            "memory",
-            "pid",
-            "uptime",
+            "peak_cpu",
+            "peak_memory",
+            "runtime",
             "limit",
+            "exit_reason",
+            "finished_at",
         )
 
         table_outer = tk.Frame(card, bg="#171a21")
@@ -671,29 +684,29 @@ class SandboxMockup(tk.Tk):
         table_outer.columnconfigure(0, weight=1)
         table_outer.rowconfigure(0, weight=1)
 
-        self.container_table = ttk.Treeview(table_outer, columns=columns, show="headings", height=7)
+        self.container_table = ttk.Treeview(table_outer, columns=columns, show="headings", height=5)
         self.job_table = self.container_table
 
         headings = {
-            "container_id": "Container ID",
-            "name": "Name",
+            "job_id": "Job ID",
             "status": "Status",
-            "cpu": "CPU",
-            "memory": "Memory",
-            "pid": "PID",
-            "uptime": "Uptime",
+            "peak_cpu": "Peak CPU",
+            "peak_memory": "Peak Memory",
+            "runtime": "Runtime",
             "limit": "Limit",
+            "exit_reason": "Exit Reason",
+            "finished_at": "Finished At",
         }
 
         widths = {
-            "container_id": 150,
-            "name": 160,
-            "status": 110,
-            "cpu": 90,
-            "memory": 110,
-            "pid": 90,
-            "uptime": 120,
-            "limit": 260,
+            "job_id": 100,
+            "status": 100,
+            "peak_cpu": 110,
+            "peak_memory": 170,
+            "runtime": 110,
+            "limit": 220,
+            "exit_reason": 220,
+            "finished_at": 160,
         }
 
         for col in columns:
@@ -1012,14 +1025,17 @@ class SandboxMockup(tk.Tk):
         self.refresh_containers()
 
     def refresh_containers(self):
-        """清空 Container 監控表格，等待 WebSocket 真實資料。"""
-        if not hasattr(self, "container_table"):
-            return
-
-        for item in self.container_table.get_children():
-            self.container_table.delete(item)
-
+        """初始化監控狀態；資源紀錄表格不放假資料。"""
         self.update_monitor_usage(0, 0, "idle")
+
+    def clear_resource_records(self):
+        self.resource_records.clear()
+
+        if hasattr(self, "container_table"):
+            for item in self.container_table.get_children():
+                self.container_table.delete(item)
+
+        self.set_output("Container 資源紀錄已清空。")
 
     def show_selected_container(self, event=None):
         selected = self.container_table.selection() if hasattr(self, "container_table") else []
@@ -1027,18 +1043,41 @@ class SandboxMockup(tk.Tk):
             return
 
         values = self.container_table.item(selected[0], "values")
-        self.set_output(
-            f"Container ID: {values[0]}\n"
-            f"Name: {values[1]}\n"
-            f"Status: {values[2]}\n"
-            f"CPU Usage: {values[3]}\n"
-            f"Memory Usage: {values[4]}\n"
-            f"PID: {values[5]}\n"
-            f"Uptime: {values[6]}\n"
-            f"Limit: {values[7]}\n\n"
-            "目前這區先做 UI 展示，之後接上 sandbox/container 狀態 API 後，"
-            "可以改成顯示真實 container 狀態。"
-        )
+
+        parts = [
+            ("Container 資源摘要\n", "title"),
+            ("──────────────────────────────\n\n", "muted"),
+
+            ("Job ID       : ", "label"),
+            (f"{values[0]}\n", None),
+
+            ("Status       : ", "label"),
+            (f"{values[1]}\n", "success" if values[1] == "done" else "error" if values[1] == "error" else None),
+
+            ("Peak CPU     : ", "label"),
+            (f"{values[2]}\n", None),
+
+            ("Peak Memory  : ", "label"),
+            (f"{values[3]}\n", None),
+
+            ("Runtime      : ", "label"),
+            (f"{values[4]}\n", None),
+
+            ("Limit        : ", "label"),
+            (f"{values[5]}\n", None),
+
+            ("Exit Reason  : ", "label"),
+            (f"{values[6]}\n", "error" if values[1] == "error" else None),
+
+            ("Finished At  : ", "label"),
+            (f"{values[7]}\n\n", None),
+
+            ("說明\n", "label"),
+            ("──────────────────────────────\n", "muted"),
+            ("這是該次 sandbox container 執行的資源使用摘要。\n", "code"),
+        ]
+
+        self.set_output_rich(parts)
 
     def show_selected_job(self, event=None):
         self.show_selected_container(event)
@@ -1133,11 +1172,23 @@ class SandboxMockup(tk.Tk):
                 return
 
             self.current_job_id = job_id
+            self.current_peak_cpu = 0.0
+            self.current_peak_memory_percent = 0.0
+            self.current_peak_memory_kb = 0.0
+            self.current_runtime_ms = 0
             self.status_value.config(text="Pending")
             self.update_monitor_usage(0, 0, "pending")
 
-            for item in self.container_table.get_children():
-                self.container_table.delete(item)
+            self.update_resource_record_row(
+                job_id=str(job_id),
+                status="pending",
+                peak_cpu=0.0,
+                peak_memory_kb=0.0,
+                peak_memory_percent=0.0,
+                runtime_ms=0,
+                exit_reason="Waiting for sandbox",
+                finished_at="-",
+            )
 
             self.set_output(
                 f"程式碼已送出。\n"
@@ -1161,6 +1212,31 @@ class SandboxMockup(tk.Tk):
         except requests.exceptions.RequestException as e:
             messagebox.showerror("API 錯誤", f"無法連接後端 API：\n{e}")
 
+    def extract_exit_reason(self, error_text):
+        if not error_text:
+            return "Unknown"
+
+        if "Time Limit Exceeded" in error_text or "TLE" in error_text:
+            return "Time Limit Exceeded"
+
+        if "Memory" in error_text or "MLE" in error_text or "OOM" in error_text:
+            return "Memory Limit Exceeded"
+
+        if "Segmentation Fault" in error_text:
+            return "Segmentation Fault"
+
+        if "Output Limit Exceeded" in error_text or "OLE" in error_text:
+            return "Output Limit Exceeded"
+
+        if "Seccomp" in error_text or "Security Violation" in error_text:
+            return "Security Violation"
+
+        if "Compile Error" in error_text:
+            return "Compile Error"
+
+        first_line = error_text.strip().splitlines()[0]
+        return first_line[:80]
+
     def check_job_result(self, job_id):
         try:
             response = requests.get(f"{API_URL}/jobs/{job_id}", timeout=5)
@@ -1178,14 +1254,43 @@ class SandboxMockup(tk.Tk):
                 self.after(1000, lambda: self.check_job_result(job_id))
                 return
 
+            finished_at = datetime.now().strftime("%H:%M:%S")
+
             if status == "done":
                 self.monitor_state_var.set("done")
+
+                self.update_resource_record_row(
+                    job_id=str(job_id),
+                    status="done",
+                    peak_cpu=self.current_peak_cpu,
+                    peak_memory_kb=self.current_peak_memory_kb,
+                    peak_memory_percent=self.current_peak_memory_percent,
+                    runtime_ms=self.current_runtime_ms,
+                    exit_reason="Normal Exit",
+                    finished_at=finished_at,
+                )
+
                 self.show_job_result(job)
                 self.add_history(f"Job #{job_id}", "Done", "--", "Success")
                 return
 
             if status == "error":
                 self.monitor_state_var.set("error")
+
+                error_text = job.get("error", "")
+                exit_reason = self.extract_exit_reason(error_text)
+
+                self.update_resource_record_row(
+                    job_id=str(job_id),
+                    status="error",
+                    peak_cpu=self.current_peak_cpu,
+                    peak_memory_kb=self.current_peak_memory_kb,
+                    peak_memory_percent=self.current_peak_memory_percent,
+                    runtime_ms=self.current_runtime_ms,
+                    exit_reason=exit_reason,
+                    finished_at=finished_at,
+                )
+
                 self.show_job_result(job)
                 self.add_history(f"Job #{job_id}", "Error", "--", "Failed")
                 return
@@ -1284,20 +1389,12 @@ class SandboxMockup(tk.Tk):
         ws_url = f"ws://127.0.0.1:8000/ws/jobs/{job_id}/monitor"
 
         def on_open(ws):
-            self.after(0, lambda: self.set_output(
-                f"WebSocket 已連線。\n"
-                f"URL: {ws_url}\n\n"
-                f"等待 sandbox monitor.log 資料..."
-            ))
             self.after(0, lambda: self.monitor_state_var.set("running"))
 
         def on_message(ws, message):
-            print("[WS MESSAGE]", message)
-
             try:
                 data = json.loads(message)
             except json.JSONDecodeError:
-                print("[WS JSON ERROR]", message)
                 return
 
             self.after(0, lambda d=data, raw=message: self.apply_monitor_data(d, raw))
@@ -1305,18 +1402,13 @@ class SandboxMockup(tk.Tk):
         def on_error(ws, error):
             error_text = str(error)
 
-            # opcode=8 是 WebSocket close frame，通常代表正常關閉，不要顯示成錯誤
             if "opcode=8" in error_text or "Connection to remote host was lost" in error_text:
-                print("[WS CLOSE FRAME]", error)
                 return
 
-            print("[WS ERROR]", error)
             self.after(0, lambda: self.monitor_state_var.set("ws error"))
             self.after(0, lambda: self.set_output(f"WebSocket 錯誤：\n{error}"))
 
         def on_close(ws, close_status_code, close_msg):
-            print("[WS CLOSED]", close_status_code, close_msg)
-
             def update_closed_state():
                 current_state = self.monitor_state_var.get()
 
@@ -1345,86 +1437,93 @@ class SandboxMockup(tk.Tk):
             current_state = self.monitor_state_var.get()
             if current_state not in ["done", "error"]:
                 self.monitor_state_var.set("done")
-
-            self.set_output(
-                f"WebSocket 已關閉。\n\n"
-                f"最後收到資料：\n{raw_message or data}"
-            )
             return
 
         self.latest_monitor_data = data
 
         status = data.get("status", "running")
         stage = data.get("stage", "-")
-        job_id = data.get("job_id", self.current_job_id)
+        job_id = str(data.get("job_id", self.current_job_id))
 
         memory_kb = float(data.get("memory_kb", 0) or 0)
+        elapsed_ms = int(data.get("elapsed_ms", 0) or 0)
 
-        # C 端如果還沒送 cpu_percent，CPU 會維持 0，這是正常的
+        # C 端如果尚未送 cpu_percent，CPU 會先維持 0
         cpu_percent = float(data.get("cpu_percent", 0) or 0)
 
         if "memory_percent" in data:
             memory_percent = float(data.get("memory_percent", 0) or 0)
         else:
             memory_limit_kb = int(self.memory_var.get()) * 1024
+            memory_percent = (memory_kb / memory_limit_kb) * 100 if memory_kb > 0 and memory_limit_kb > 0 else 0
 
-            if memory_kb > 0 and memory_limit_kb > 0:
-                memory_percent = (memory_kb / memory_limit_kb) * 100
-            else:
-                memory_percent = 0
-
+        # 左上角：本次執行即時總覽
         self.update_monitor_usage(cpu_percent, memory_percent, status)
-        self.update_container_monitor_row(data, cpu_percent, memory_percent)
 
-        self.set_output(
-            f"Job ID: {job_id}\n"
-            f"WebSocket 即時監控資料已收到。\n\n"
-            f"stage: {stage}\n"
-            f"status: {status}\n"
-            f"elapsed_ms: {data.get('elapsed_ms', '-')}\n"
-            f"memory_kb: {data.get('memory_kb', '-')}\n"
-            f"memory_percent: {memory_percent:.2f}%\n"
-            f"cpu_percent: {cpu_percent:.2f}%\n\n"
-            f"RAW:\n{raw_message or data}"
+        # 紀錄本次 peak
+        self.current_peak_cpu = max(self.current_peak_cpu, cpu_percent)
+        self.current_peak_memory_percent = max(self.current_peak_memory_percent, memory_percent)
+        self.current_peak_memory_kb = max(self.current_peak_memory_kb, memory_kb)
+        self.current_runtime_ms = max(self.current_runtime_ms, elapsed_ms)
+
+        # 下方表格：執行中更新，結束後保留
+        self.update_resource_record_row(
+            job_id=job_id,
+            status=status,
+            peak_cpu=self.current_peak_cpu,
+            peak_memory_kb=self.current_peak_memory_kb,
+            peak_memory_percent=self.current_peak_memory_percent,
+            runtime_ms=self.current_runtime_ms,
+            exit_reason="Running..." if status == "running" else "Waiting final result",
+            finished_at="-",
         )
 
         if stage == "execute" and status == "done":
             self.monitor_state_var.set("done")
 
 
-    def update_container_monitor_row(self, data, cpu_percent, memory_percent):
+    def update_resource_record_row(
+        self,
+        job_id,
+        status,
+        peak_cpu,
+        peak_memory_kb,
+        peak_memory_percent,
+        runtime_ms,
+        exit_reason,
+        finished_at,
+    ):
         if not hasattr(self, "container_table"):
             return
 
-        job_id = str(data.get("job_id", self.current_job_id))
-        status = data.get("status", "-")
-        elapsed_ms = int(data.get("elapsed_ms", 0) or 0)
-        memory_kb = float(data.get("memory_kb", 0) or 0)
-
         mode_config = self.get_mode_config()
 
-        container_id = f"job_{job_id}"
-        name = f"sandbox_job_{job_id}"
-        cpu_text = f"{cpu_percent:.1f}%"
-        memory_text = f"{memory_kb / 1024:.1f} MB ({memory_percent:.1f}%)"
-        uptime_text = f"{elapsed_ms / 1000:.1f}s"
+        item_id = f"job_{job_id}"
+        runtime_text = f"{runtime_ms / 1000:.2f}s"
+        peak_cpu_text = f"{peak_cpu:.1f}%"
+        peak_memory_text = f"{peak_memory_kb / 1024:.1f} MB ({peak_memory_percent:.1f}%)"
         limit_text = f"{mode_config['cpu']:g} core / {mode_config['memory']}MB / {mode_config['timeout']}s"
 
         values = (
-            container_id,
-            name,
+            f"job_{job_id}",
             status,
-            cpu_text,
-            memory_text,
-            "-",
-            uptime_text,
+            peak_cpu_text,
+            peak_memory_text,
+            runtime_text,
             limit_text,
+            exit_reason,
+            finished_at,
         )
 
-        if self.container_table.exists(container_id):
-            self.container_table.item(container_id, values=values)
+        #print("[TABLE INSERT]", item_id, values)
+
+        self.resource_records[item_id] = values
+
+        if self.container_table.exists(item_id):
+            self.container_table.item(item_id, values=values)
         else:
-            self.container_table.insert("", "end", iid=container_id, values=values)
+            self.container_table.insert("", 0, iid=item_id, values=values)
+
     def update_monitor_usage(self, cpu_percent=0, memory_percent=0, state=None):
         if hasattr(self, "cpu_gauge"):
             self.cpu_gauge.set_value(cpu_percent)

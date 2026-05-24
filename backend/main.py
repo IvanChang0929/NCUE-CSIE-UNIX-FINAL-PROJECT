@@ -13,6 +13,10 @@ init_db()
 class JobCreate(BaseModel):
     language: str
     source_code: str
+    mode: str = "basic"
+    cpu: float = 1.0
+    memory: int = 256
+    timeout: int = 10
 
 
 class JobUpdate(BaseModel):
@@ -50,13 +54,21 @@ def create_job(job: JobCreate):
         INSERT INTO jobs (
             language,
             source_code,
-            status
+            status,
+            mode,
+            cpu_limit,
+            memory_limit,
+            timeout_limit
         )
-        VALUES (?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (
         job.language,
         job.source_code,
-        "pending"
+        "pending",
+        job.mode,
+        job.cpu,
+        job.memory,
+        job.timeout
     ))
 
     conn.commit()
@@ -78,7 +90,9 @@ def get_jobs():
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT id, language, source_code, status, output, error, created_at, updated_at
+        SELECT id, language, source_code, status, output, error,
+                mode, cpu_limit, memory_limit, timeout_limit,
+                created_at, updated_at
         FROM jobs
         ORDER BY id DESC
     """)
@@ -95,7 +109,9 @@ def get_pending_jobs():
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT id, language, source_code, status, output, error, created_at, updated_at
+        SELECT id, language, source_code, status, output, error,
+                mode, cpu_limit, memory_limit, timeout_limit,
+                created_at, updated_at
         FROM jobs
         WHERE status = ?
         ORDER BY id ASC
@@ -113,7 +129,9 @@ def get_job(job_id: int):
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT id, language, source_code, status, output, error, created_at, updated_at
+        SELECT id, language, source_code, status, output, error,
+                mode, cpu_limit, memory_limit, timeout_limit,
+                created_at, updated_at
         FROM jobs
         WHERE id = ?
     """, (job_id,))

@@ -59,28 +59,46 @@ static void write_cgroup_file(const char *job_id, const char *name, const char *
     close(fd);
 }
 
-void setup_resource_limits(){
+void setup_resource_limits(long memory_mb, int timeout_sec)
+{
+    rlim_t memory_bytes = (rlim_t)memory_mb * 1024 * 1024;
 
-    // CPU time limit
-    set_limit(RLIMIT_CPU,CPU_LIMIT,CPU_LIMIT+1);
+    // CPU time limit，這裡用 timeout 當 CPU time 的保護線
+    set_limit(RLIMIT_CPU, timeout_sec, timeout_sec + 1);
 
     // Virtual memory limit
-    set_limit(RLIMIT_AS,MEMORY_LIMIT,MEMORY_LIMIT);
+    set_limit(RLIMIT_AS, memory_bytes, memory_bytes);
 
     // File descriptor limit
-    set_limit(RLIMIT_NOFILE,NOFILE_LIMIT,NOFILE_LIMIT);
+    set_limit(RLIMIT_NOFILE, NOFILE_LIMIT, NOFILE_LIMIT);
 
-    set_limit(RLIMIT_NPROC,NPROC_LIMIT,NPROC_LIMIT);
+    // Process limit
+    set_limit(RLIMIT_NPROC, NPROC_LIMIT, NPROC_LIMIT);
 
-    set_limit(RLIMIT_FSIZE,FILESIZE_LIMIT,FILESIZE_LIMIT);
+    // Output file size limit
+    set_limit(RLIMIT_FSIZE, FILESIZE_LIMIT, FILESIZE_LIMIT);
 
     printf("[Sandbox] Resource limits applied\n");
 }
 
-void setup_cgroup(pid_t pid, const char *job_id)
+static void build_cpu_max_value(double cpu_core, char *buffer, size_t size)
+{
+    long period = 100000;
+    long quota = (long)(cpu_core * period);
+
+    if (quota < 1000) {
+        quota = 1000;
+    }
+
+    snprintf(buffer, size, "%ld %ld", quota, period);
+}
+
+void setup_cgroup(pid_t pid, const char *job_id, double cpu_core, long memory_mb)
 {
     char pid_str[32];
     char cgroup_path[256];
+    char cpu_max_value[64];
+    char memory_max_value[64];
 
     build_cgroup_path(job_id, cgroup_path, sizeof(cgroup_path));
 
@@ -91,14 +109,22 @@ void setup_cgroup(pid_t pid, const char *job_id)
         }
     }
 
-    write_cgroup_file(job_id, "cpu.max", "50000 100000");
-    write_cgroup_file(job_id, "memory.max", "536870912");
+    build_cpu_max_value(cpu_core, cpu_max_value, sizeof(cpu_max_value));
+    snprintf(memory_max_value, sizeof(memory_max_value), "%ld", memory_mb * 1024 * 1024);
+
+    write_cgroup_file(job_id, "cpu.max", cpu_max_value);
+    write_cgroup_file(job_id, "memory.max", memory_max_value);
     write_cgroup_file(job_id, "pids.max", "64");
 
     snprintf(pid_str, sizeof(pid_str), "%d", pid);
     write_cgroup_file(job_id, "cgroup.procs", pid_str);
 
-    printf("[Parent] cgroup configured for Job %s\n", job_id);
+    printf(
+        "[Parent] cgroup configured for Job %s: CPU %.2f core, Memory %ld MB\n",
+        job_id,
+        cpu_core,
+        memory_mb
+    );
 }
 
 void print_resource_usage(void){
@@ -216,4 +242,31 @@ long read_cgroup_memory_current_kb(const char *job_id)
     fclose(fp);
 
     return bytes / 1024;
+}
+
+long read_cgroup_cpu_usage_usec(const char *job_id)
+{
+    char cgroup_path[256];
+    char cpu_path[512];
+
+    build_cgroup_path(job_id, cgroup_path, sizeof(cgroup_path));
+    snprintf(cpu_path, sizeof(cpu_path), "%s/cpu.stat", cgroup_path);
+
+    FILE *fp = fopen(cpu_path, "r");
+    if (fp == NULL) {
+        return -1;
+    }
+
+    char key[64];
+    long value;
+
+    while (fscanf(fp, "%63s %ld", key, &value) == 2) {
+        if (strcmp(key, "usage_usec") == 0) {
+            fclose(fp);
+            return value;
+        }
+    }
+
+    fclose(fp);
+    return -1;
 }
