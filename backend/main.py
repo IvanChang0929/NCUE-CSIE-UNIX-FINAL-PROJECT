@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from .db import get_connection, init_db
-
+from .logger import log_info, log_warning, log_error, log_exception
 app = FastAPI()
 
 init_db()
@@ -27,7 +27,10 @@ def home():
 
 @app.post("/jobs")
 def create_job(job: JobCreate):
+    log_info("API", "Create job request received: language=%s", job.language)
+
     if job.language != "c":
+        log_warning("API", "Rejected job: unsupported language=%s", job.language)
         raise HTTPException(
             status_code=400,
             detail="Only C language is supported now"
@@ -44,6 +47,9 @@ def create_job(job: JobCreate):
     conn.commit()
     job_id = cursor.lastrowid
     conn.close()
+    
+    log_info("API", "Job created: job_id=%s, language=%s, status=pending", job_id, job.language)
+
 
     return {
         "message": "Job created",

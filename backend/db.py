@@ -1,4 +1,5 @@
 import sqlite3
+from .logger import log_info, log_exception
 
 DB_NAME = "sandbox.db"
 
@@ -28,3 +29,5 @@ def init_db():
 
     conn.commit()
     conn.close()
+
+    log_info("DB", "Database initialized")
