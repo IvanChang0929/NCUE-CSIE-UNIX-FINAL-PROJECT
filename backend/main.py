@@ -1,9 +1,12 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
-from .db import get_connection, init_db
+from db import get_connection, init_db
+import asyncio
+import json
+from pathlib import Path
 
 app = FastAPI()
-
+BASE_DIR = Path(__file__).resolve().parent.parent
 init_db()
 
 
@@ -167,3 +170,42 @@ def update_job(job_id: int, job: JobUpdate):
         "job_id": job_id,
         "status": job.status
     }
+
+@app.websocket("/ws/jobs/{job_id}/monitor")
+async def job_monitor_ws(websocket: WebSocket, job_id: int):
+    await websocket.accept()
+
+    monitor_path = BASE_DIR / "sandbox" / "result" / f"job_{job_id}" / "monitor.log"
+    last_line_count = 0
+
+    try:
+        while True:
+            if monitor_path.exists():
+                lines = monitor_path.read_text().splitlines()
+
+                new_lines = lines[last_line_count:]
+                last_line_count = len(lines)
+
+                for line in new_lines:
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    await websocket.send_json(data)
+
+                    # compile 也可能 status=done
+                    # 所以只能 execute done 才關閉 websocket
+                    if data.get("stage") == "execute" and data.get("status") == "done":
+                        await websocket.send_json({
+                            "job_id": str(job_id),
+                            "status": "closed",
+                            "message": "monitor done"
+                        })
+                        await websocket.close()
+                        return
+
+            await asyncio.sleep(0.2)
+
+    except WebSocketDisconnect:
+        print(f"[WebSocket] client disconnected: job {job_id}")

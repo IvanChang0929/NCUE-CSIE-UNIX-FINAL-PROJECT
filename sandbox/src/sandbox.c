@@ -211,6 +211,40 @@ int execute_child_func(void *arg){
     }
 }
 
+static void write_monitor_sample(
+    const char *job_id,
+    const char *stage_name,
+    long elapsed_ms,
+    long memory_kb,
+    const char *status
+) {
+    char path[512];
+
+    snprintf(
+        path,
+        sizeof(path),
+        "./sandbox/result/job_%s/monitor.log",
+        job_id
+    );
+
+    FILE *fp = fopen(path, "a");
+    if (fp == NULL) {
+        return;
+    }
+
+    fprintf(
+        fp,
+        "{\"job_id\":\"%s\",\"stage\":\"%s\",\"elapsed_ms\":%ld,\"memory_kb\":%ld,\"status\":\"%s\"}\n",
+        job_id,
+        stage_name,
+        elapsed_ms,
+        memory_kb,
+        status
+    );
+
+    fclose(fp);
+}
+
 int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, StageResult *res) {
     res->executed = 1;
     ChildPipeArgs pipes;
@@ -233,7 +267,7 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
     close(pipes.stderr_pipe[1]);
 
     setup_uid_gid_map(pid);
-    setup_cgroup(pid);
+    setup_cgroup(pid, current_job_id);
 
     if (write(sync_pipe[1], "x", 1) == -1) {
         perror("write sync_pipe");
@@ -258,6 +292,8 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
     struct timespec start, now;
     clock_gettime(CLOCK_MONOTONIC, &start);
 
+    long last_monitor_ms = 0;
+
     while (1) {
         while (out_total < sizeof(res->stdout_buf) - 1) {
             n = read(pipes.stdout_pipe[0], res->stdout_buf + out_total, sizeof(res->stdout_buf) - out_total - 1);
@@ -281,6 +317,22 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
 
         clock_gettime(CLOCK_MONOTONIC, &now);
         double elapsed = (now.tv_sec - start.tv_sec) + (now.tv_nsec - start.tv_nsec) / 1e9;
+
+        long elapsed_ms = (long)(elapsed * 1000);
+
+        if (elapsed_ms - last_monitor_ms >= 200) {
+            long memory_kb = read_cgroup_memory_current_kb(current_job_id);
+
+            write_monitor_sample(
+                current_job_id,
+                stage_name,
+                elapsed_ms,
+                memory_kb,
+                "running"
+            );
+
+            last_monitor_ms = elapsed_ms;
+        }
 
         if (elapsed > TIME_LIMIT_SEC) {
             fprintf(stderr, "\n[Parent] Time Limit Exceeded (Wall-clock timeout)\n");
@@ -319,6 +371,14 @@ int run_sandboxed_stage(int (*child_func)(void *), const char *stage_name, Stage
     
     res->time_ms = user_ms + sys_ms;  
     res->memory_kb = usage.ru_maxrss; 
+
+    write_monitor_sample(
+        current_job_id,
+        stage_name,
+        res->time_ms,
+        res->memory_kb,
+        "done"
+    );
 
     fprintf(stderr, "\n========================================\n");
     fprintf(stderr, "[Parent DEBUG] 子進程 wait4 原始狀態碼 status = %d\n", status);

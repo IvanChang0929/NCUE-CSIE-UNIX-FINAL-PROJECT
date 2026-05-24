@@ -80,6 +80,7 @@ def run_job_with_sandbox(job_id, language):
             }
         }
     finally:
+        time.sleep(3)
         if result_dir.exists():
             shutil.rmtree(result_dir)
     return sandbox_result
