@@ -34,7 +34,6 @@ void write_combined_json(const char *job_id, StageResult *comp, StageResult *exe
         return;
     }
 
-   
     if(exec->executed) {
         char txt_path[512];
         snprintf(txt_path, sizeof(txt_path), "%s/output.txt", result_dir);
@@ -57,8 +56,9 @@ void write_combined_json(const char *job_id, StageResult *comp, StageResult *exe
         return;
     }
 
-    char esc_out[8192] = {0};
-    char esc_err[8192] = {0};
+    // ★ 關鍵修正 1：改為 static 並將空間放大到 64KB，徹底根除 GCC 長篇大論時引發的 Buffer Overflow
+    static char esc_out[65536];
+    static char esc_err[65536];
 
     fprintf(fjson, "{\n");
 
@@ -67,6 +67,17 @@ void write_combined_json(const char *job_id, StageResult *comp, StageResult *exe
         escape_json(comp->stderr_buf, esc_err);
         fprintf(fjson, "  \"compile\": {\n");
         fprintf(fjson, "    \"exit_code\": %d,\n", comp->exit_code);
+        
+        if (comp->status_message[0] != '\0') {
+            fprintf(fjson, "    \"status_message\": \"%s\",\n", comp->status_message);
+        } else {
+            if (comp->exit_code == 0) {
+                fprintf(fjson, "    \"status_message\": \"Success\",\n");
+            } else {
+                fprintf(fjson, "    \"status_message\": \"Compile Error\",\n");
+            }
+        }
+        
         fprintf(fjson, "    \"stdout\": \"%s\",\n", esc_out);
         fprintf(fjson, "    \"stderr\": \"%s\"\n", esc_err);
         fprintf(fjson, "  }%s\n", exec->executed ? "," : "");
