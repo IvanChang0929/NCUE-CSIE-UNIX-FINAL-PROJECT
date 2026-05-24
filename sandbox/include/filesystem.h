@@ -26,7 +26,7 @@ uid_t get_real_uid(void);
 gid_t get_real_gid(void);
 int prepare_rootfs(const char *job_id);
 int mount_secure_container(const char *job_id);
-int mount_overlayfs(const char *job_id);
+int mount_overlayfs(const char *job_id,const char *language);
 void setup_pivot_root(const char *job_id);
 int cleanup_container_filesystem(const char *job_id);
 
