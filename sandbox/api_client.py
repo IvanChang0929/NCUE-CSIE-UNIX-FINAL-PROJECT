@@ -21,7 +21,8 @@ def get_pending_job():
 
     return {
         "id": job["id"],
-        "code": job["source_code"]
+        "code": job["source_code"],
+        "language": job["language"]
     }
 
 
