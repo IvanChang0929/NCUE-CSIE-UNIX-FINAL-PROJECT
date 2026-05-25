@@ -8,7 +8,8 @@ SRC_SANDBOX = \
 	sandbox/src/limit.c \
 	sandbox/src/namespace.c \
 	sandbox/src/filesystem.c \
-	sandbox/src/seccomp.c
+	sandbox/src/seccomp.c \
+	logger/logger.c
 
 TARGET_SANDBOX = sandbox/build/sandbox
 

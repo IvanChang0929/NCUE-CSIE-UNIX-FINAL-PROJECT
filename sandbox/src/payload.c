@@ -8,6 +8,7 @@
 
 #include "payload.h"
 #include "sandbox_seccomp.h"
+#include "../../logger/logger.h"
 
 
 extern char **environ;
@@ -52,19 +53,19 @@ int compile_program(void){
         if(WIFEXITED(status) && WEXITSTATUS(status) == 0){
 
             printf("[Sandbox] Compilation successful\n");
-
+            logger_log(LOG_INFO, "payload", "Compilation successful.");
             return 0;
         }
 
         fprintf(stderr, "[Sandbox] Compilation failed\n");
-
+        logger_log(LOG_ERROR, "payload", "Compilation failed.");
         return -1;
     }
 
     else if(strcmp(current_language, "python") == 0){
 
         fprintf(stderr, "[Sandbox] Python does not require compilation\n");
-
+        logger_log(LOG_ERROR, "payload", "Python does not require compilation.");
         return 0;
     }
 
@@ -73,6 +74,7 @@ int compile_program(void){
         "[Sandbox] Unsupported language: %s\n",
         current_language
     );
+    logger_log(LOG_ERROR, "payload", "Unsupported language: %s.", current_language);
 
     return -1;
 }

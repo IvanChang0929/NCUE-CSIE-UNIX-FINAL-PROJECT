@@ -295,12 +295,6 @@ class SandboxMockup(tk.Tk):
             pady=3,
         ).grid(row=0, column=1, sticky="e", padx=(6, 6))
 
-        ttk.Button(
-            title_row,
-            text="啟動",
-            command=self.start_resource_monitor,
-        ).grid(row=0, column=2, sticky="e")
-
         gauge_area = tk.Frame(monitor_card, bg="#171a21")
         gauge_area.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=10, pady=(0, 8))
         gauge_area.columnconfigure(0, weight=1)
