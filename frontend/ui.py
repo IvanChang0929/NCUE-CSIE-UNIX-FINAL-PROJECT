@@ -1070,9 +1070,6 @@ class SandboxMockup(tk.Tk):
             ("Finished At  : ", "label"),
             (f"{values[7]}\n\n", None),
 
-            ("說明\n", "label"),
-            ("──────────────────────────────\n", "muted"),
-            ("這是該次 sandbox container 執行的資源使用摘要。\n", "code"),
         ]
 
         self.set_output_rich(parts)
