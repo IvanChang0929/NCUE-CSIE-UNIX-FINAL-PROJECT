@@ -1,32 +1,42 @@
 CC = gcc
+CFLAGS = -Wall -Wextra -O2 -Isandbox/include 
 
-CFLAGS = -Wall -Wextra -O2 -Isandbox/include
-
-SRC = \
+SRC_SANDBOX = \
 	sandbox/src/sandbox.c \
-	sandbox/src/compiler.c \
+	sandbox/src/payload.c \
+	sandbox/src/result_writer.c \
 	sandbox/src/limit.c \
-	sandbox/src/namespace.c
+	sandbox/src/namespace.c \
+	sandbox/src/filesystem.c \
+	sandbox/src/seccomp.c \
+	logger/logger.c
 
-TARGET = sandbox/build/sandbox
+TARGET_SANDBOX = sandbox/build/sandbox
 
-all: $(TARGET)
+all: $(TARGET_SANDBOX) 
 
-$(TARGET): $(SRC)
+$(TARGET_SANDBOX): $(SRC_SANDBOX)
 	mkdir -p sandbox/build
-	$(CC) $(CFLAGS) $(SRC) -o $(TARGET)
+	$(CC) $(CFLAGS) $(SRC_SANDBOX) -o $(TARGET_SANDBOX) -lseccomp
 
-worker: $(TARGET)
+worker: all
 	@echo "[System] Starting Sandbox Worker Polling Loop..."
 	python3 sandbox/worker.py
 
-run: $(TARGET)
-	./$(TARGET) sandbox/tmp/test/main.c
+run: all
+	@echo "[System] Executing single manual sandbox test with ID: test_job..."
+	sudo ./$(TARGET_SANDBOX) test_job
 
 clean:
-	@echo "[System] Cleaning up build and temporary files..."
-	rm -rf sandbox/build
-	rm -rf sandbox/tmp/build
-	rm -rf sandbox/tmp/job_*
+	@echo "[System] Cleaning up build and dynamic container folders..."
+	sudo rm -rf sandbox/build
+	sudo rm -rf sandbox/tmp/job_*
+	sudo rm -rf sandbox/containers/job_*
+	sudo rm -rf sandbox/result/job_*
+	sudo rm -rf /tmp/sandbox/job_*
 
-.PHONY: all clean run worker
+clean-all: clean
+	@echo "[System] Deep cleaning... Removing base_rootfs template..."
+	sudo rm -rf sandbox/images
+
+.PHONY: all clean clean-all run worker

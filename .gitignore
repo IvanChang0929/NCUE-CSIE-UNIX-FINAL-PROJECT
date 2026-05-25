@@ -7,7 +7,16 @@ sandbox/__pycache__/
 # executable binaries
 sandbox/build
 
-sandbox/sandbox_manager.c
+sandbox/image
+
+sandbox/result
+
+alpine-minirootfs-3.19.1-x86_64.tar.gz
+
+worker_*.log
+
+rebuild.log
+
 __pycache__/
 *.pyc
 
@@ -19,3 +28,4 @@ backend/venv/
 
 .vscode/
 .env
+logs/
