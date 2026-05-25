@@ -542,3 +542,424 @@ POST /jobs
 ---
 ## 10. 注意事項
 1. 使用前請先啟動後端 FastAPI 與 Worker。
+
+
+# 後端資料庫 API 與資源監控模組
+
+---
+
+## 1. 模組簡介
+
+本模組主要負責 AI Sandbox 系統中的：
+
+```text
+1. 後端 API
+2. SQLite 資料庫管理
+3. Job 狀態流程
+4. Worker 串接
+5. Mode / Limit 資源限制傳遞
+6. WebSocket 即時資源監控
+```
+
+使用者從前端送出程式碼後，後端會建立一筆 Job 紀錄，保存程式碼、語言、執行模式與資源限制設定。  
+Worker 會從後端取得待執行 Job，呼叫底層 Sandbox 執行程式，最後將執行結果回寫至資料庫。
+
+此外，系統也實作 WebSocket 即時監控功能，能將 Sandbox 執行期間的 CPU、Memory、Runtime 等資源使用資訊即時推送至前端。
+
+---
+
+## 2. 主要檔案結構
+
+```text
+backend/
+├── main.py              # FastAPI 後端 API 與 WebSocket
+├── db.py                # SQLite 資料庫初始化與連線
+├── requirements.txt     # 後端與 WebSocket 相關套件
+
+sandbox/
+├── api_client.py        # Worker 與後端 API 溝通
+├── worker.py            # 取得 Job、呼叫 Sandbox、回傳結果
+├── result/job_<id>/
+│   ├── result.json      # Sandbox 執行結果
+│   └── monitor.log      # 即時資源監控資料
+
+frontend/
+├── ui.py                # Tkinter GUI 前端介面
+```
+
+---
+
+## 3. 資料庫設計
+
+後端使用 SQLite 作為資料庫，主要資料表為：
+
+```text
+jobs
+```
+
+用來保存每一次使用者提交的程式執行任務。
+
+### jobs table 主要欄位
+
+```text
+id               Job 編號
+language         程式語言，例如 c / python
+source_code      使用者提交的程式碼
+status           Job 狀態：pending / running / done / error
+output           程式標準輸出
+error            錯誤訊息或執行失敗原因
+mode             執行模式：basic / strict / dev / custom
+cpu_limit        CPU 限制，單位為 core
+memory_limit     記憶體限制，單位為 MB
+timeout_limit    執行時間限制，單位為秒
+created_at       建立時間
+updated_at       更新時間
+```
+
+Job 狀態流程：
+
+```text
+pending  →  running  →  done
+                    ↘  error
+```
+
+---
+
+## 4. 後端 API 說明
+
+---
+
+### 4.1 建立 Job
+
+```http
+POST /jobs
+```
+
+前端送出程式碼與資源限制設定，後端建立 Job 並寫入資料庫。
+
+#### Request 範例
+
+```json
+{
+  "language": "c",
+  "source_code": "#include <stdio.h>\nint main(){ printf(\"Hello\\n\"); return 0; }",
+  "mode": "basic",
+  "cpu": 1.0,
+  "memory": 256,
+  "timeout": 10
+}
+```
+
+#### Response 範例
+
+```json
+{
+  "message": "Job created",
+  "job_id": 1,
+  "status": "pending"
+}
+```
+
+---
+
+### 4.2 查詢所有 Job
+
+```http
+GET /jobs
+```
+
+回傳資料庫中所有 Job，可供前端歷史紀錄使用。
+
+---
+
+### 4.3 查詢等待執行的 Job
+
+```http
+GET /jobs/pending
+```
+
+Worker 會定期呼叫此 API，取得目前狀態為 `pending` 的 Job。
+
+---
+
+### 4.4 查詢單一 Job
+
+```http
+GET /jobs/{job_id}
+```
+
+前端可透過此 API 查詢特定 Job 的執行狀態、輸出與錯誤訊息。
+
+---
+
+### 4.5 更新 Job 狀態與結果
+
+```http
+PATCH /jobs/{job_id}
+```
+
+Worker 執行完 Sandbox 後，會透過此 API 將結果寫回後端。
+
+#### Request 範例
+
+```json
+{
+  "status": "done",
+  "output": "Hello Sandbox!",
+  "error": ""
+}
+```
+
+若執行失敗：
+
+```json
+{
+  "status": "error",
+  "output": "",
+  "error": "Time Limit Exceeded"
+}
+```
+
+---
+
+## 5. Worker 執行流程
+
+Worker 負責連接後端 API 與底層 Sandbox。
+
+### 流程說明
+
+```text
+1. Worker 啟動後持續輪詢 /jobs/pending
+2. 若有 pending Job，取得 Job 資料
+3. 將 Job 狀態更新為 running
+4. 將 source_code 寫入 /tmp/sandbox/job_<id>/app/
+5. 呼叫底層 Sandbox 執行
+6. Sandbox 產生 result.json 與 monitor.log
+7. Worker 讀取 result.json
+8. 將執行結果回傳後端
+```
+
+Worker 呼叫 Sandbox 的格式：
+
+```bash
+sudo ./sandbox/build/sandbox <job_id> <language> <cpu_core> <memory_mb> <timeout_sec>
+```
+
+範例：
+
+```bash
+sudo ./sandbox/build/sandbox 12 c 1.0 256 10
+```
+
+代表：
+
+```text
+Job ID：12
+語言：C
+CPU 限制：1 core
+Memory 限制：256 MB
+Timeout：10 秒
+```
+
+---
+
+## 6. Mode Setting 與資源限制傳遞
+
+前端提供不同執行模式：
+
+```text
+Strict：0.5 core / 128 MB / 5 s
+Basic ：1 core   / 256 MB / 10 s
+Dev   ：2 cores  / 512 MB / 30 s
+Custom：使用者自訂
+```
+
+前端送出 Job 時會將 Mode 設定傳給後端，後端存入資料庫，Worker 取得 Job 時再把這些限制傳給 Sandbox。
+
+### 資料流
+
+```text
+Frontend Mode Setting
+↓
+POST /jobs
+↓
+SQLite jobs table
+↓
+Worker
+↓
+sandbox <job_id> <language> <cpu> <memory> <timeout>
+↓
+cgroup / rlimit 實際套用限制
+```
+
+---
+
+## 7. 即時資源監控設計
+
+Sandbox parent process 執行期間會定期讀取 cgroup 資訊：
+
+```text
+/sys/fs/cgroup/sandbox_job_<job_id>/memory.current
+/sys/fs/cgroup/sandbox_job_<job_id>/cpu.stat
+```
+
+並將監控資料寫入：
+
+```text
+sandbox/result/job_<job_id>/monitor.log
+```
+
+---
+
+## 8. monitor.log 格式
+
+### monitor.log 範例
+
+```json
+{"job_id":"12","stage":"execute","elapsed_ms":1200,"memory_kb":65536,"cpu_percent":48.50,"status":"running"}
+```
+
+### 欄位說明
+
+```text
+job_id        Job 編號
+stage         compile 或 execute
+elapsed_ms    執行經過時間，單位毫秒
+memory_kb     目前記憶體使用量，單位 KB
+cpu_percent   CPU 使用率，相對於 Mode CPU Limit
+status        running / done
+```
+
+---
+
+## 9. WebSocket 即時監控 API
+
+後端提供 WebSocket 讓前端即時接收資源資料。
+
+```text
+/ws/jobs/{job_id}/monitor
+```
+
+### WebSocket 流程
+
+```text
+前端建立 WebSocket 連線
+↓
+後端讀取 sandbox/result/job_<id>/monitor.log
+↓
+偵測新增資料
+↓
+即時推送 JSON 給前端
+↓
+前端更新 CPU / Memory / Runtime 顯示
+↓
+Job done 後關閉 WebSocket
+```
+
+當執行結束時，後端會送出：
+
+```json
+{
+  "job_id": "12",
+  "status": "closed",
+  "message": "monitor done"
+}
+```
+
+---
+
+## 10. 前端資源紀錄保存方式
+
+前端收到 WebSocket 資料後，會即時計算並保存：
+
+```text
+Peak CPU
+Peak Memory
+Runtime
+Limit
+Exit Reason
+```
+
+目前 Container 資源紀錄是暫存在前端記憶體與 Tkinter 表格中。
+
+主要流程：
+
+```text
+WebSocket monitor data
+↓
+apply_monitor_data()
+↓
+更新本次執行總覽
+↓
+更新 Peak CPU / Peak Memory / Runtime
+↓
+寫入 Container 資源紀錄表格
+```
+
+此外，前端會在 Job 送出當下保存該 Job 的 Limit 快照，避免使用者後續調整滑桿時影響舊紀錄。
+
+---
+
+## 11. 執行結果分類
+
+系統可根據 Sandbox 回傳結果分類不同狀態：
+
+```text
+Success
+Compile Error
+Runtime Error
+Time Limit Exceeded
+Memory Limit Exceeded
+Output Limit Exceeded
+Seccomp Blocked Syscall
+Network Blocked
+FD Limit Works
+```
+
+其中 TLE、MLE、Seccomp 等錯誤會由 Sandbox 強制中止或偵測；Network Blocked、FD Limit Works 則是測試程式偵測到安全限制生效後回報結果。
+
+---
+
+## 12. 相依套件
+
+後端需要 FastAPI、Uvicorn 與 WebSocket 支援。
+
+`backend/requirements.txt` 中應包含：
+
+```text
+fastapi
+uvicorn[standard]
+pydantic
+requests
+websocket-client
+```
+
+其中：
+
+```text
+uvicorn[standard]
+```
+
+用於支援 FastAPI WebSocket，避免出現：
+
+```text
+No supported WebSocket library detected
+```
+
+而：
+
+```text
+websocket-client
+```
+
+用於 Tkinter 前端連接後端 WebSocket。
+
+安裝套件：
+
+```bash
+cd backend
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+---
