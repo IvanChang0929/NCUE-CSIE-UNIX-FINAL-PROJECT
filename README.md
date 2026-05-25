@@ -464,3 +464,81 @@ Parent Process                                      Child Process
 - 每個 Job 的 runtime 目錄會建立在 `/tmp/sandbox/job_<job_id>`，正常結束後會自動清理。
 - 執行結果會保存在 `./sandbox/result/job_<job_id>`。
 
+---
+## 1. 啟動後端 API
+`ui.py` 會透過 FastAPI 後端建立 Job、查詢歷史紀錄，並使用 WebSocket 接收沙盒資源監控資料。
+
+請先確認後端服務已啟動，預設連線位置為：
+```bash
+http://127.0.0.1:8000
+```
+
+若後端尚未啟動，前端仍可開啟，但送出程式、歷史紀錄與即時監控功能會無法連線。
+
+---
+## 2. 安裝前端需要的套件
+在專案根目錄或前端目錄下安裝 Python 套件：
+```bash
+pip install requests websocket-client
+```
+
+`tkinter` 通常已隨 Python 內建，若執行時出現 tkinter 相關錯誤，請確認目前 Python 環境是否支援 Tk GUI。
+
+---
+## 3. 啟動前端 UI
+進入 `frontend` 目錄後執行：
+```bash
+cd frontend
+python3 ui.py
+```
+
+若你是在專案根目錄執行，可使用：
+```bash
+python3 frontend/ui.py
+```
+
+---
+## 4. 使用程式碼輸入區
+前端支援直接輸入程式碼，也可以按下「載入程式碼」選取本機檔案。本機檔案位置不影響使用
+
+目前可選語言：
+```text
+C
+Python
+```
+
+---
+## 5. 設定 Sandbox 執行模式
+送出前可在 Mode Setting 區塊選擇資源限制模式：
+
+```text
+Basic Mode  : CPU 1 core、Memory 256MB、Timeout 10s
+Strict Mode : CPU 0.5 core、Memory 128MB、Timeout 5s
+Dev Mode    : CPU 2 cores、Memory 512MB、Timeout 30s
+Custom Mode : 自訂 CPU、Memory、Timeout
+```
+
+
+---
+## 6. 送出程式到沙盒執行
+按下「送出執行」後，前端會將程式碼與限制設定送到後端：
+```http
+POST /jobs
+```
+
+送出成功後會顯示 Job ID，並開始等待 Worker 與 Sandbox 執行結果。
+
+---
+## 7. 即時資源監控
+
+畫面左上角會顯示本次執行的 CPU / Memory 儀表板。
+下方 Container 資源紀錄會保留每個 Job 的摘要，包含：
+
+---
+## 8. 查看 Job 歷史紀錄
+按下輸出區右上角「歷史紀錄」可開啟 Job 歷史視窗。
+可查看該筆 Job 的完整內容。
+
+---
+## 10. 注意事項
+1. 使用前請先啟動後端 FastAPI 與 Worker。
