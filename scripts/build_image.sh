@@ -8,6 +8,14 @@ BASE="./sandbox/image/base_rootfs"
 TEMP="./sandbox/image/${IMAGE}_rootfs"
 FINAL="./sandbox/image/${IMAGE}"
 
+cleanup_mounts() {
+    sudo umount -lf "$TEMP/dev" 2>/dev/null || true
+    sudo umount -lf "$TEMP/proc" 2>/dev/null || true
+    sudo umount -lf "$TEMP/sys" 2>/dev/null || true
+}
+
+trap cleanup_mounts EXIT
+
 if [ -z "$IMAGE" ]; then
     echo "Usage: $0 <python|gcc>"
     exit 1
@@ -72,10 +80,6 @@ elif [ "$IMAGE" = "gcc" ]; then
 else
     echo "[Build] Unsupported image: $IMAGE"
 
-    sudo umount "$TEMP/dev" || true
-    sudo umount "$TEMP/proc" || true
-    sudo umount "$TEMP/sys" || true
-
     exit 1
 fi
 
@@ -84,9 +88,9 @@ fi
 #
 echo "[Build] Cleaning mounts..."
 
-sudo umount "$TEMP/dev"
-sudo umount "$TEMP/proc"
-sudo umount "$TEMP/sys"
+sudo umount -lf "$TEMP/dev" || true
+sudo umount -lf "$TEMP/proc" || true
+sudo umount -lf "$TEMP/sys" || true
 
 #
 # Generate diff layer

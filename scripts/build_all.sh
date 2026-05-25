@@ -1,4 +1,4 @@
-    #!/bin/bash
+#!/bin/bash
 
 set -e
 
@@ -14,7 +14,7 @@ echo "========================================"
 echo
 echo "[1/3] Building Alpine base_rootfs..."
 
-bash "$SCRIPT_DIR/build_base.sh"
+bash "$SCRIPT_DIR/build_rootfs.sh"
 
 #
 # Build gcc image
@@ -31,6 +31,32 @@ echo
 echo "[3/3] Building Python image..."
 
 bash "$SCRIPT_DIR/build_image.sh" python
+
+sudo rm -rf ./sandbox/image/base_rootfs/bin
+sudo rm -rf ./sandbox/image/base_rootfs/sbin
+sudo rm -rf ./sandbox/image/base_rootfs/usr/bin
+sudo rm -rf ./sandbox/image/base_rootfs/usr/sbin
+
+#
+# Recreate required runtime dirs
+#
+sudo mkdir -p ./sandbox/image/base_rootfs/bin
+sudo mkdir -p ./sandbox/image/base_rootfs/lib
+sudo mkdir -p ./sandbox/image/base_rootfs/tmp
+sudo mkdir -p ./sandbox/image/base_rootfs/dev
+
+#
+# lib64 compatibility
+#
+if [ ! -e ./sandbox/image/base_rootfs/lib64 ]; then
+    sudo ln -s lib ./sandbox/image/base_rootfs/lib64
+fi
+
+#
+# Standard tmp permission
+#
+sudo chmod 1777 ./sandbox/image/base_rootfs/tmp
+
 
 echo
 echo "========================================"
