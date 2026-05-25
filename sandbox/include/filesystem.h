@@ -19,6 +19,8 @@ typedef struct sandbox_paths {
     char host_res_dir[PATH_SIZE];
     char container_res_dir[PATH_SIZE];
 
+    char host_output_dir[PATH_SIZE];
+
 } sandbox_paths;
 
 

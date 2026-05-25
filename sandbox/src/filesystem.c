@@ -68,12 +68,10 @@ static void build_paths(const char *job_id, sandbox_paths *paths) {
     snprintf(paths->host_app_dir, PATH_SIZE, "%s/app", paths->runtime_dir);
     snprintf(paths->container_app_dir, PATH_SIZE, "%s/app", paths->merged_dir);
 
-    // 這裡的 host_res_dir 也要改成絕對路徑，避免 Parent 找不到
+    snprintf(paths->host_output_dir, PATH_SIZE, "%s/output", paths->runtime_dir);
+
     snprintf(paths->host_res_dir, PATH_SIZE, "%s/sandbox/result/job_%s", cwd, job_id);
     snprintf(paths->container_res_dir, PATH_SIZE, "%s/output", paths->merged_dir);
-    
-    //關鍵新增：把動態算好的絕對路徑存在 paths 結構體中（假設你的 sandbox_paths 結構體有這個欄位）
-    // 或者我們可以直接在 mount_overlayfs 裡面現場動態算。
 }
 
 static int prepare_dir(const char *path, mode_t dir_mode, uid_t uid, gid_t gid, int set_owner) {
@@ -108,6 +106,10 @@ int prepare_rootfs(const char *job_id) {
     if (prepare_dir(paths.upper_dir,   0777, uid, gid, 1) == -1) return -1;
     if (prepare_dir(paths.work_dir,    0777, uid, gid, 1) == -1) return -1;
 
+    if (prepare_dir(paths.host_app_dir, 0755, uid, gid, 1) == -1) return -1;
+    if (prepare_dir(paths.host_output_dir, 0777, uid, gid, 1) == -1) return -1;
+    chmod(paths.host_output_dir, 0777);
+
     // 建立一個跟 app、work 平行的實體 host tmp 目錄，給予 0777 最高權限
     char host_tmp_path[512];
     snprintf(host_tmp_path, sizeof(host_tmp_path), "%s/tmp", paths.runtime_dir);
@@ -121,15 +123,19 @@ int prepare_rootfs(const char *job_id) {
     }
 
     const char *global_res_dir = "./sandbox/result";
+
+    if (mkdir(global_res_dir, 0777) == -1 && errno != EEXIST) {
+        perror("mkdir global result dir");
+        return -1;
+    }
+
     if (chown(global_res_dir, uid, gid) == -1) {
         perror("chown global result dir");
     }
+
     if (chmod(global_res_dir, 0777) == -1) {
         perror("chmod global result dir");
     }
-
-    printf("[Parent] Runtime directories ready\n");
-    return 0;
 }
 
 int mount_overlayfs(const char *job_id, const char *language){
@@ -245,15 +251,19 @@ void setup_pivot_root(const char *job_id){
 
     // 掛載 /output
     char old_res_path[512];
-    snprintf(old_res_path, sizeof(old_res_path), "/.oldroot/tmp/sandbox/job_%s/work", job_id);
+
+    snprintf(old_res_path, sizeof(old_res_path),"/.oldroot/tmp/sandbox/job_%s/output",job_id);
+
     mkdir("/output", 0755);
+
     if (mount(old_res_path, "/output", NULL, MS_BIND | MS_REC, NULL) == -1) {
         perror("[Sandbox Sec] Secure mount /output failed");
         exit(1);
     }
+
     if (mount("/output", "/output", NULL, MS_REMOUNT | MS_BIND, NULL) == -1) {
         perror("Remount /output failed");
-    }
+}
 
     // 掛載 /proc
     if(mount("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) == -1){
@@ -296,6 +306,7 @@ void setup_pivot_root(const char *job_id){
 }
 
 int cleanup_container_filesystem(const char *job_id){
+
     sandbox_paths paths;
     build_paths(job_id, &paths);
 
