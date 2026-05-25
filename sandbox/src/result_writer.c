@@ -40,10 +40,8 @@ void write_combined_json(const char *job_id, StageResult *comp, StageResult *exe
 
         FILE *ftxt = fopen(txt_path, "r");
         if(ftxt != NULL) {
-            // 讀取實體檔案內容，蓋掉原本 Pipe 抓到的空資料
-            // sizeof(exec->stdout_buf) - 1 確保不會 Buffer Overflow
             size_t read_bytes = fread(exec->stdout_buf, 1, sizeof(exec->stdout_buf) - 1, ftxt);
-            exec->stdout_buf[read_bytes] = '\0'; // 確保字串安全結尾
+            exec->stdout_buf[read_bytes] = '\0'; 
             fclose(ftxt);
         } else {
             exec->stdout_buf[0] = '\0';
@@ -56,9 +54,16 @@ void write_combined_json(const char *job_id, StageResult *comp, StageResult *exe
         return;
     }
 
-    // ★ 關鍵修正 1：改為 static 並將空間放大到 64KB，徹底根除 GCC 長篇大論時引發的 Buffer Overflow
-    static char esc_out[65536];
-    static char esc_err[65536];
+    char *esc_out = (char *)malloc(65536);
+    char *esc_err = (char *)malloc(65536);
+    
+    if (esc_out == NULL || esc_err == NULL) {
+        perror("malloc failed in write_combined_json");
+        if (esc_out) free(esc_out);
+        if (esc_err) free(esc_err);
+        fclose(fjson);
+        return;
+    }
 
     fprintf(fjson, "{\n");
 
@@ -86,13 +91,12 @@ void write_combined_json(const char *job_id, StageResult *comp, StageResult *exe
     if(exec->executed){
         escape_json(exec->stdout_buf, esc_out);
         escape_json(exec->stderr_buf, esc_err);
-        fprintf(fjson, " \"execute\": {\n");
+        fprintf(fjson, "  \"execute\": {\n");
         fprintf(fjson, "    \"exit_code\": %d,\n", exec->exit_code);
         
         if (exec->status_message[0] != '\0') {
             fprintf(fjson, "    \"status_message\": \"%s\",\n", exec->status_message);
         } else {
-            // 如果陣列是空的，代表是正常自己結束的程式
             fprintf(fjson, "    \"status_message\": \"Normal Exit\",\n");
         }
         fprintf(fjson, "    \"stdout\": \"%s\",\n", esc_out);
@@ -102,7 +106,15 @@ void write_combined_json(const char *job_id, StageResult *comp, StageResult *exe
         fprintf(fjson, "  }\n");
     }
     fprintf(fjson, "}\n");
+    
+    //強制把 Buffer 刷新進硬碟並關閉
+    fflush(fjson);
     fclose(fjson);
     
-    fprintf(stderr, "[Parent] Combined JSON saved to %s\n", json_path);
+    //關鍵修正：記得釋放記憶體避免 Memory Leak
+    free(esc_out);
+    free(esc_err);
+    
+    //如果是獨立 Process 跑這句話沒事，但建議帶上 job_id 方便在混亂的 Log 中識別
+    fprintf(stderr, "[Parent][Job %s] Combined JSON saved to %s\n", job_id, json_path);
 }
