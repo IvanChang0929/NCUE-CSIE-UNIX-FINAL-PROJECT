@@ -4,6 +4,76 @@
 
 ---
 
+## 目錄
+
+1. [系統架構總覽](#系統架構總覽)
+2. [Sandbox 模組](#sandbox-模組)
+   - [Rootfs / Image 建構腳本使用說明](#1-rootfs--image-建構腳本使用說明)
+   - [Sandbox 防禦機制說明](#2-sandbox-防禦機制說明)
+   - [編譯與啟動 Sandbox](#3-編譯與啟動-sandbox)
+   - [Sandbox 執行流程摘要](#4-sandbox-執行流程摘要)
+   - [Sandbox 注意事項](#5-sandbox-注意事項)
+3. [後端資料庫 API 與資源監控模組](#後端資料庫-api-與資源監控模組)
+   - [模組簡介](#1-模組簡介)
+   - [主要檔案結構](#2-主要檔案結構)
+   - [資料庫設計](#3-資料庫設計)
+   - [後端 API 說明](#4-後端-api-說明)
+   - [Worker 執行流程](#5-worker-執行流程)
+   - [Mode Setting 與資源限制傳遞](#6-mode-setting-與資源限制傳遞)
+   - [即時資源監控設計](#7-即時資源監控設計)
+   - [monitor.log 格式](#8-monitorlog-格式)
+   - [WebSocket 即時監控 API](#9-websocket-即時監控-api)
+   - [前端資源紀錄保存方式](#10-前端資源紀錄保存方式)
+   - [執行結果分類](#11-執行結果分類)
+   - [相依套件](#12-相依套件)
+4. [前端 UI 使用說明](#前端-ui-使用說明)
+   - [啟動後端 API](#1-啟動後端-api)
+   - [安裝前端需要的套件](#2-安裝前端需要的套件)
+   - [啟動前端 UI](#3-啟動前端-ui)
+   - [使用程式碼輸入區](#4-使用程式碼輸入區)
+   - [設定 Sandbox 執行模式](#5-設定-sandbox-執行模式)
+   - [送出程式到沙盒執行](#6-送出程式到沙盒執行)
+   - [即時資源監控](#7-即時資源監控)
+   - [查看 Job 歷史紀錄](#8-查看-job-歷史紀錄)
+   - [前端注意事項](#9-前端注意事項)
+
+---
+
+## 系統架構總覽
+
+```text
+Frontend Tkinter UI
+        ↓
+FastAPI Backend API
+        ↓
+SQLite jobs table
+        ↓
+     Worker
+        ↓
+Sandbox Runtime
+        ↓
+result.json / output.txt / monitor.log
+        ↓
+Backend WebSocket
+        ↓
+Frontend 即時資源監控與歷史紀錄
+```
+
+整體流程如下：
+
+1. 使用者在前端輸入或載入 C / Python 程式碼。
+2. 前端將程式碼、語言、執行模式與資源限制送到 FastAPI 後端。
+3. 後端建立 Job，並將資料存入 SQLite。
+4. Worker 輪詢 pending Job，取得任務後呼叫底層 Sandbox。
+5. Sandbox 建立隔離環境、套用資源限制、編譯並執行程式。
+6. Sandbox 輸出 `result.json`、`output.txt`、`monitor.log`。
+7. Worker 將結果回寫後端。
+8. 前端透過 API 查詢結果，並透過 WebSocket 接收即時資源監控資料。
+
+---
+
+# Sandbox 模組
+
 ## 1. Rootfs / Image 建構腳本使用說明
 
 本系統的 sandbox rootfs 放在：
@@ -34,7 +104,7 @@ sudo bash scripts/build_all.sh
 1. 建立 Alpine `base_rootfs`
 2. 建立 GCC 語言層
 3. 建立 Python 語言層
-4. 清理 base rootfs 中不必要的執行檔目錄 (確保 rootfs 最小化)
+4. 清理 base rootfs 中不必要的執行檔目錄（確保 rootfs 最小化）
 5. 重新建立 sandbox 執行時需要的基本目錄，例如 `bin`、`lib`、`tmp`、`dev`
 6. 設定 `/tmp` 權限為 `1777`
 
@@ -270,7 +340,7 @@ Time Limit Exceeded (TLE)
 
 Sandbox 的 seccomp 規則設計參考 Docker 預設 seccomp profile，採用 blacklist 方式進行 syscall 過濾。也就是預設允許一般程式執行所需的 syscall，但針對可能造成沙盒逃逸、系統狀態修改或核心層級操作的高風險 syscall 進行封鎖。
 
-| 類型 |  syscall | 防禦目的 |
+| 類型 | syscall | 防禦目的 |
 |---|---|---|
 | namespace / mount escape | `mount`, `umount2`, `pivot_root`, `setns`, `unshare` | 避免使用者程式重新掛載檔案系統、切換 namespace 或嘗試逃逸 sandbox |
 | kernel module | `init_module`, `finit_module`, `delete_module` | 避免載入或移除核心模組 |
@@ -354,7 +424,6 @@ monitor.log   # 執行期間的資源監控紀錄
 }
 ```
 
-
 ---
 
 ## 3. 編譯與啟動 Sandbox
@@ -401,12 +470,16 @@ base_rootfs  gcc  python
 ```bash
 make
 ```
+
 編譯完成後，sandbox binary 預期位於類似位置：
 
 ```bash
 ./sandbox/build/sandbox
 ```
-## 4. 執行流程摘要
+
+---
+
+## 4. Sandbox 執行流程摘要
 
 整體 Sandbox 流程會從執行以下指令開始：
 
@@ -458,95 +531,15 @@ Parent Process                                      Child Process
 
 ---
 
-## 5. 注意事項
+## 5. Sandbox 注意事項
 
 - rootfs 建構過程會使用 `chroot` 與 bind mount，若腳本中斷，可以手動檢查是否有殘留掛載點。
 - 每個 Job 的 runtime 目錄會建立在 `/tmp/sandbox/job_<job_id>`，正常結束後會自動清理。
 - 執行結果會保存在 `./sandbox/result/job_<job_id>`。
 
 ---
-## 1. 啟動後端 API
-`ui.py` 會透過 FastAPI 後端建立 Job、查詢歷史紀錄，並使用 WebSocket 接收沙盒資源監控資料。
-
-請先確認後端服務已啟動，預設連線位置為：
-```bash
-http://127.0.0.1:8000
-```
-
-若後端尚未啟動，前端仍可開啟，但送出程式、歷史紀錄與即時監控功能會無法連線。
-
----
-## 2. 安裝前端需要的套件
-在專案根目錄或前端目錄下安裝 Python 套件：
-```bash
-pip install requests websocket-client
-```
-
-`tkinter` 通常已隨 Python 內建，若執行時出現 tkinter 相關錯誤，請確認目前 Python 環境是否支援 Tk GUI。
-
----
-## 3. 啟動前端 UI
-進入 `frontend` 目錄後執行：
-```bash
-cd frontend
-python3 ui.py
-```
-
-若你是在專案根目錄執行，可使用：
-```bash
-python3 frontend/ui.py
-```
-
----
-## 4. 使用程式碼輸入區
-前端支援直接輸入程式碼，也可以按下「載入程式碼」選取本機檔案。本機檔案位置不影響使用
-
-目前可選語言：
-```text
-C
-Python
-```
-
----
-## 5. 設定 Sandbox 執行模式
-送出前可在 Mode Setting 區塊選擇資源限制模式：
-
-```text
-Basic Mode  : CPU 1 core、Memory 256MB、Timeout 10s
-Strict Mode : CPU 0.5 core、Memory 128MB、Timeout 5s
-Dev Mode    : CPU 2 cores、Memory 512MB、Timeout 30s
-Custom Mode : 自訂 CPU、Memory、Timeout
-```
-
-
----
-## 6. 送出程式到沙盒執行
-按下「送出執行」後，前端會將程式碼與限制設定送到後端：
-```http
-POST /jobs
-```
-
-送出成功後會顯示 Job ID，並開始等待 Worker 與 Sandbox 執行結果。
-
----
-## 7. 即時資源監控
-
-畫面左上角會顯示本次執行的 CPU / Memory 儀表板。
-下方 Container 資源紀錄會保留每個 Job 的摘要，包含：
-
----
-## 8. 查看 Job 歷史紀錄
-按下輸出區右上角「歷史紀錄」可開啟 Job 歷史視窗。
-可查看該筆 Job 的完整內容。
-
----
-## 10. 注意事項
-1. 使用前請先啟動後端 FastAPI 與 Worker。
-
 
 # 後端資料庫 API 與資源監控模組
-
----
 
 ## 1. 模組簡介
 
@@ -626,8 +619,6 @@ pending  →  running  →  done
 ---
 
 ## 4. 後端 API 說明
-
----
 
 ### 4.1 建立 Job
 
@@ -963,3 +954,114 @@ pip install -r requirements.txt
 ```
 
 ---
+
+# 前端 UI 使用說明
+
+## 1. 啟動後端 API
+
+`ui.py` 會透過 FastAPI 後端建立 Job、查詢歷史紀錄，並使用 WebSocket 接收沙盒資源監控資料。
+
+請先確認後端服務已啟動，預設連線位置為：
+
+```bash
+http://127.0.0.1:8000
+```
+
+若後端尚未啟動，前端仍可開啟，但送出程式、歷史紀錄與即時監控功能會無法連線。
+
+---
+
+## 2. 安裝前端需要的套件
+
+在專案根目錄或前端目錄下安裝 Python 套件：
+
+```bash
+pip install requests websocket-client
+```
+
+`tkinter` 通常已隨 Python 內建，若執行時出現 tkinter 相關錯誤，請確認目前 Python 環境是否支援 Tk GUI。
+
+---
+
+## 3. 啟動前端 UI
+
+進入 `frontend` 目錄後執行：
+
+```bash
+cd frontend
+python3 ui.py
+```
+
+若你是在專案根目錄執行，可使用：
+
+```bash
+python3 frontend/ui.py
+```
+
+---
+
+## 4. 使用程式碼輸入區
+
+前端支援直接輸入程式碼，也可以按下「載入程式碼」選取本機檔案。本機檔案位置不影響使用。
+
+目前可選語言：
+
+```text
+C
+Python
+```
+
+---
+
+## 5. 設定 Sandbox 執行模式
+
+送出前可在 Mode Setting 區塊選擇資源限制模式：
+
+```text
+Basic Mode  : CPU 1 core、Memory 256MB、Timeout 10s
+Strict Mode : CPU 0.5 core、Memory 128MB、Timeout 5s
+Dev Mode    : CPU 2 cores、Memory 512MB、Timeout 30s
+Custom Mode : 自訂 CPU、Memory、Timeout
+```
+
+---
+
+## 6. 送出程式到沙盒執行
+
+按下「送出執行」後，前端會將程式碼與限制設定送到後端：
+
+```http
+POST /jobs
+```
+
+送出成功後會顯示 Job ID，並開始等待 Worker 與 Sandbox 執行結果。
+
+---
+
+## 7. 即時資源監控
+
+畫面左上角會顯示本次執行的 CPU / Memory 儀表板。
+
+下方 Container 資源紀錄會保留每個 Job 的摘要，包含：
+
+```text
+Peak CPU
+Peak Memory
+Runtime
+Limit
+Exit Reason
+```
+
+---
+
+## 8. 查看 Job 歷史紀錄
+
+按下輸出區右上角「歷史紀錄」可開啟 Job 歷史視窗。
+
+可查看該筆 Job 的完整內容。
+
+---
+
+## 9. 前端注意事項
+
+1. 使用前請先啟動後端 FastAPI 與 Worker。
