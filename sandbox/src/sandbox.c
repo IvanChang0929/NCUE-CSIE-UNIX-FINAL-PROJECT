@@ -678,9 +678,10 @@ int main(int argc, char *argv[]){
     int exec_status = run_sandboxed_stage(execute_child_func, "execute", &exec_res);
 
     char cp_res_cmd[1024];
-    snprintf(cp_res_cmd, sizeof(cp_res_cmd), 
-             "mkdir -p ./sandbox/result/job_%s && cp /tmp/sandbox/job_%s/work/output.txt ./sandbox/result/job_%s/output.txt 2>/dev/null", 
-             current_job_id, current_job_id, current_job_id);
+    snprintf(cp_res_cmd,sizeof(cp_res_cmd),
+        "mkdir -p ./sandbox/result/job_%s && " "cp /tmp/sandbox/job_%s/output/output.txt ""./sandbox/result/job_%s/output.txt 2>/dev/null",
+        current_job_id,current_job_id, current_job_id
+    );
     system(cp_res_cmd);
 
     write_combined_json(current_job_id, &comp_res, &exec_res);
