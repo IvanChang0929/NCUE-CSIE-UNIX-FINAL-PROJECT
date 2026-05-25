@@ -4,6 +4,7 @@ import json
 import shutil
 from pathlib import Path
 from api_client import *
+from logger import log_info, log_error, log_exception
 import os
 
 def print_job_start(job_id):
@@ -149,6 +150,7 @@ def process_job(job):
 def main():
     init_workspace()
     print("[Worker] Started. Waiting for jobs...")
+    log_info("Worker", "Started. Waiting for jobs...")
 
     try:
         while True:
@@ -157,11 +159,11 @@ def main():
             if not job:
                 time.sleep(1)
                 continue
-
+            log_info("Worker", f"Get job. Job ID: {job["id"]}")
             process_job(job)
 
     except KeyboardInterrupt:
         print("\n[Worker] Shutting down gracefully...")
-
+        log_info("Worker", "Worker shut down")
 if __name__ == "__main__":
     main()

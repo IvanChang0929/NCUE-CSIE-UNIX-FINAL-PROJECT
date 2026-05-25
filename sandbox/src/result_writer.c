@@ -2,6 +2,7 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include "result_writer.h"
+#include "../../logger/logger.h"
 
 static void escape_json(const char *src, char *dest){
     while(*src){
@@ -117,4 +118,5 @@ void write_combined_json(const char *job_id, StageResult *comp, StageResult *exe
     
     //如果是獨立 Process 跑這句話沒事，但建議帶上 job_id 方便在混亂的 Log 中識別
     fprintf(stderr, "[Parent][Job %s] Combined JSON saved to %s\n", job_id, json_path);
+    logger_log(LOG_INFO, "result_writer", "Combined JSON saved to %s. Job ID: %s", json_path, job_id)
 }

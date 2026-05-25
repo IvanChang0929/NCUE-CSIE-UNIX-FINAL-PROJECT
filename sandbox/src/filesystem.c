@@ -10,6 +10,7 @@
 #include <errno.h>
 
 #include "filesystem.h"
+#include "../../logger/logger.h"
 
 #define IMAGE_SUBDIR "sandbox/image"
 
@@ -55,6 +56,7 @@ static void build_paths(const char *job_id, sandbox_paths *paths) {
     char cwd[256];
     if (getcwd(cwd, sizeof(cwd)) == NULL) {
         perror("getcwd failed");
+        logger_log(LOG_ERROR, "Filesystem", "Getcwd failed. Job ID: %s", job_id);
         snprintf(cwd, sizeof(cwd), ".");
     }
 
@@ -79,6 +81,7 @@ static void build_paths(const char *job_id, sandbox_paths *paths) {
 static int prepare_dir(const char *path, mode_t dir_mode, uid_t uid, gid_t gid, int set_owner) {
     if (mkdir_p(path, dir_mode) == -1 && errno != EEXIST) {
         fprintf(stderr, "Failed to create directory %s: ", path);
+        logger_log(LOG_ERROR, "Filesystem", "Failed to create directory %s: ", path);
         perror(""); 
         return -1;
     }
@@ -86,6 +89,7 @@ static int prepare_dir(const char *path, mode_t dir_mode, uid_t uid, gid_t gid, 
     if (set_owner) {
         if (chown(path, uid, gid) == -1) {
             fprintf(stderr, "Failed to chown %s: ", path);
+            logger_log(LOG_ERROR, "Filesystem", "Failed to chown %s: ", path);
             perror("");
             return -1;
         }
@@ -129,6 +133,7 @@ int prepare_rootfs(const char *job_id) {
     }
 
     printf("[Parent] Runtime directories ready\n");
+    logger_log(LOG_INFO, "Filesystem", "Runtime directories ready. Job ID: %s", job_id);
     return 0;
 }
 
@@ -150,6 +155,7 @@ int mount_overlayfs(const char *job_id, const char *language){
 
     if (mkdir_p(paths.merged_dir, 0777) == -1 && errno != EEXIST) {
         perror("mkdir_p merged_dir failed");
+        logger_log(LOG_ERROR, "Parent", "mkdir_p merged_dir failed. Job ID: %s", job_id);
         return -1;
     }
     chmod(paths.merged_dir, 0777);
@@ -194,6 +200,7 @@ int mount_overlayfs(const char *job_id, const char *language){
     }
 
     printf("[Parent] OverlayFS mounted\n");
+    logger_log(LOG_INFO, "Parent", "OverlayFS mounted. Job ID: %s", job_id);
 
     return 0;
 }
@@ -225,6 +232,7 @@ void setup_pivot_root(const char *job_id){
     }
 
     printf("[Sandbox] pivot_root success\n");
+    logger_log(LOG_INFO, "Filesystem", "Pivot_root success. Job ID: %s", job_id);
 
     if(chdir("/") == -1){
         perror("chdir /");
@@ -237,10 +245,12 @@ void setup_pivot_root(const char *job_id){
     mkdir("/app", 0755);
     if (mount(old_app_path, "/app", NULL, MS_BIND | MS_REC, NULL) == -1) {
         perror("[Sandbox Sec] Secure mount /app failed");
+        logger_log(LOG_ERROR, "Filesystem", "Secure mount /app failed. Job ID: %s", job_id);
         exit(1);
     }
     if (mount("/app", "/app", NULL, MS_REMOUNT | MS_BIND, NULL) == -1) {
         perror("Remount /app failed");
+        logger_log(LOG_ERROR, "Filesystem", "Remount /app failed. Job ID: %s", job_id);
     }
 
     // 掛載 /output
@@ -249,10 +259,12 @@ void setup_pivot_root(const char *job_id){
     mkdir("/output", 0755);
     if (mount(old_res_path, "/output", NULL, MS_BIND | MS_REC, NULL) == -1) {
         perror("[Sandbox Sec] Secure mount /output failed");
+        logger_log(LOG_ERROR, "Filesystem", "Secure mount /output failed. Job ID: %s", job_id);
         exit(1);
     }
     if (mount("/output", "/output", NULL, MS_REMOUNT | MS_BIND, NULL) == -1) {
         perror("Remount /output failed");
+        logger_log(LOG_ERROR, "Filesystem", "Remount /output failed. Job ID: %s", job_id);
     }
 
     // 掛載 /proc
@@ -293,6 +305,7 @@ void setup_pivot_root(const char *job_id){
     }
 
     printf("[Sandbox] Container rootfs ready for Job %s\n", job_id);
+    logger_log(LOG_INFO, "Filesystem", "Container rootfs ready. Job ID: %s", job_id);
 }
 
 int cleanup_container_filesystem(const char *job_id){
@@ -309,9 +322,11 @@ int cleanup_container_filesystem(const char *job_id){
     snprintf(cmd,sizeof(cmd),"rm -rf %s",paths.runtime_dir);
     if(system(cmd) != 0){
         perror("[Cleanup] rm -rf runtime");
+         logger_log(LOG_ERROR, "Filesystem", "rm -rf runtime. Job ID: %s", job_id);
     }
     else{
         printf("[Cleanup] Job %s runtime removed.\n", job_id);
+        logger_log(LOG_INFO, "Filesystem", "Runtime removed. Job ID: %s", job_id);
     }
 
     return 0;

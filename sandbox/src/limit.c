@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 
 #include "limit.h"
+#include "../../logger/logger.h"
 #include <fcntl.h>
 #include <errno.h>
 
@@ -65,20 +66,22 @@ void setup_resource_limits(long memory_mb, int timeout_sec)
 
     // CPU time limit，這裡用 timeout 當 CPU time 的保護線
     set_limit(RLIMIT_CPU, timeout_sec, timeout_sec + 1);
-
+    logger_log(LOG_SECURITY, "Limit", "Set CPU time limit to %s.", timeout_sec);
     // Virtual memory limit
     set_limit(RLIMIT_AS, memory_bytes, memory_bytes);
-
+    logger_log(LOG_SECURITY, "Limit", "Set memory time limit to %s.", memory_bytes);
     // File descriptor limit
     set_limit(RLIMIT_NOFILE, NOFILE_LIMIT, NOFILE_LIMIT);
-
+    logger_log(LOG_SECURITY, "Limit", "Set file desciptor limit to %s.", NOFILE_LIMIT);
     // Process limit
     set_limit(RLIMIT_NPROC, NPROC_LIMIT, NPROC_LIMIT);
-
+    logger_log(LOG_SECURITY, "Limit", "Set CPUs to %s.", NPROC_LIMIT);
     // Output file size limit
     set_limit(RLIMIT_FSIZE, FILESIZE_LIMIT, FILESIZE_LIMIT);
+    logger_log(LOG_SECURITY, "Limit", "Set file size limit to %s.", FILESIZE_LIMIT);
 
     printf("[Sandbox] Resource limits applied\n");
+    logger_log(LOG_SECURITY, "Limit", "Resource limits applied.");
 }
 
 static void build_cpu_max_value(double cpu_core, char *buffer, size_t size)
@@ -125,6 +128,7 @@ void setup_cgroup(pid_t pid, const char *job_id, double cpu_core, long memory_mb
         cpu_core,
         memory_mb
     );
+    logger_log(LOG_INFO, "Limit", "cgroup configured CPU %.2f core, Memory %ld MB. Job ID: %s", cpu_core, memory_mb, job_id);
 }
 
 void print_resource_usage(void){
@@ -187,12 +191,14 @@ void print_sandbox_result(int status){
             printf(
                 "[Parent] CPU limit exceeded\n"
             );
+            logger_log(LOG_WARN, "Limit", "CPU limit exceeded.");
 
         }else if(sig == SIGSEGV){
 
             printf(
                 "[Parent] Segmentation fault\n"
             );
+            logger_log(LOG_WARN, "Limit", "Segmentation fault.");
 
         }else if(sig == SIGKILL){
 
@@ -200,12 +206,14 @@ void print_sandbox_result(int status){
                 "[Parent] Process killed "
                 "(OOM or forced kill)\n"
             );
+            logger_log(LOG_WARN, "Limit", "Process killed (OOM or forced kill).");
 
         }else if(sig == SIGSYS){
 
             printf(
                 "[Parent] Blocked by seccomp\n"
             );
+            logger_log(LOG_WARN, "Limit", "Blocked by seccomp.");
 
         }else{
 
@@ -213,6 +221,7 @@ void print_sandbox_result(int status){
                 "[Parent] Killed by signal : %d\n",
                 sig
             );
+            logger_log(LOG_WARN, "Limit", "Killed by signal : %d.", sig);
         }
     }
 

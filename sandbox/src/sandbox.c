@@ -22,7 +22,7 @@
 #include "sandbox_seccomp.h"
 #include "payload.h"
 #include "result_writer.h"
-
+#include "../../logger/logger.h"
 
 
 #define TIME_LIMIT_SEC 5
@@ -158,7 +158,7 @@ int compile_child_func(void *arg){
     if(read(sync_pipe[0], &buf, 1) == -1){ exit(1); }
 
     if (setgid(0) == -1) { 
-        perror("setgid failed"); 
+        perror("setgid failed");
         exit(1); 
     }
     if (setuid(0) == -1) { 
@@ -604,10 +604,18 @@ int main(int argc, char *argv[]){
         return EXIT_FAILURE;
     }
 
+    if (logger_init("./logs/sandbox.log") != 0) {
+        fprintf(stderr, "Logger init failed\n");
+        return EXIT_FAILURE;
+    }
+
+    atexit(logger_close);
+
     if(!valid_job_id(argv[1])){
         fprintf(stderr, "invalid job id\n");
         return EXIT_FAILURE;
     }
+    logger_log(LOG_INFO, "Sandbox", "Job started. Job ID: %s", argv[1]);
 
     current_job_id = argv[1];
     current_language = valid_language(argv[2]);
@@ -633,6 +641,7 @@ int main(int argc, char *argv[]){
 
     fprintf(stderr, "\n========== Sandbox ==========\n");
     fprintf(stderr, "[Parent] Managing Job ID: %s\n", current_job_id);
+    logger_log(LOG_INFO, "Parent", " Managing Job ID: %s", current_job_id);
     fprintf(stderr, "[Parent] Language: %s\n", current_language);
     fprintf(
         stderr,
@@ -644,6 +653,7 @@ int main(int argc, char *argv[]){
 
     if(prepare_rootfs(current_job_id) != 0){
         fprintf(stderr, "[Parent] Rootfs preparation failed\n");
+        logger_log(LOG_ERROR, "Sandbox", "Rootfs preparation failed. Job ID: %s", current_job_id);
         return EXIT_FAILURE;
     }
 
@@ -665,11 +675,12 @@ int main(int argc, char *argv[]){
         WEXITSTATUS(compile_status) != 0
     ){
         fprintf(stderr, "[Parent] Compile stage failed\n");
+        logger_log(LOG_ERROR, "Sandbox", "Compile stage failed. Job ID: %s", current_job_id);
         write_combined_json(current_job_id, &comp_res, &exec_res);
         cleanup_container_filesystem(current_job_id);
         return EXIT_FAILURE;
     }
-
+    logger_log(LOG_INFO, "Sandbox", "Compile success. Job ID: %s", current_job_id);
     fprintf(
         stderr,
         "-------------------------------- Compile stage finished ----------------------------------\n"
@@ -686,14 +697,16 @@ int main(int argc, char *argv[]){
     write_combined_json(current_job_id, &comp_res, &exec_res);
 
     if(exec_status == -1){
+        logger_log(LOG_ERROR, "Sandbox", "Execute failed. Job ID: %s", current_job_id);
         cleanup_container_filesystem(current_job_id);
         return EXIT_FAILURE;
     }
-
+    logger_log(LOG_INFO, "Sandbox", "Execute successed. Job ID: %s", current_job_id);
     print_sandbox_result(exec_status);
     cleanup_container_filesystem(current_job_id);
 
     fprintf(stderr, "[Parent] All stages completed successfully.\n");
+    logger_log(LOG_INFO, "Sandbox", "All stages completed successfully. Job ID: %s", current_job_id);
 
     return EXIT_SUCCESS;
 }
