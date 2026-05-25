@@ -13,6 +13,8 @@
 #include <sys/resource.h>
 #include <signal.h>
 #include <sys/prctl.h>
+#include <ctype.h>
+
 
 #include "limit.h"
 #include "namespace.h"
@@ -39,6 +41,38 @@ static long current_memory_mb = 256;
 static int current_timeout_sec = 10;
 char *current_job_id = NULL;
 char *current_language = NULL;
+
+char* valid_language(const char *s){
+
+    if(strcmp(s, "c") == 0)
+        return "c";
+
+    if(strcmp(s, "python") == 0)
+        return "python";
+
+    return "c";
+}
+
+int valid_job_id(const char *s){
+    if(s == NULL || *s == '\0'){
+        return 0;
+    }
+
+    for(int i = 0; s[i]; i++){
+
+        char c = s[i];
+
+        if(
+            !isalnum(c) &&
+            c != '_' &&
+            c != '-'
+        ){
+            return 0;
+        }
+    }
+
+    return 1;
+}
 
 void prepare_test_source(const char *job_id){
     char app_dir[512];
@@ -143,6 +177,7 @@ int compile_child_func(void *arg){
 
 int execute_child_func(void *arg){
     ChildPipeArgs *pipes = (ChildPipeArgs *)arg;
+    prctl(PR_SET_PDEATHSIG, SIGKILL);
 
     close(sync_pipe[1]);
     char buf;
@@ -162,6 +197,7 @@ int execute_child_func(void *arg){
     setup_mount_namespace();
     setup_pivot_root(current_job_id);
     setup_resource_limits(current_memory_mb, current_timeout_sec);
+    
 
     pid_t pid2 = fork();
     if(pid2 == -1){
@@ -169,6 +205,8 @@ int execute_child_func(void *arg){
         exit(1);
     }
     if(pid2 == 0){
+        prctl(PR_SET_PDEATHSIG, SIGKILL);
+
         sigset_t mask;
         sigemptyset(&mask);
         if (sigprocmask(SIG_SETMASK, &mask, NULL) == -1) {
@@ -189,7 +227,7 @@ int execute_child_func(void *arg){
 
         if (setgid(1000) == -1) { perror("setgid failed"); exit(1); }
         if (setuid(1000) == -1) { perror("setuid failed"); exit(1); }
-        prctl(PR_SET_PDEATHSIG, SIGKILL);
+        
 
         execute_program();
 
@@ -566,8 +604,13 @@ int main(int argc, char *argv[]){
         return EXIT_FAILURE;
     }
 
+    if(!valid_job_id(argv[1])){
+        fprintf(stderr, "invalid job id\n");
+        return EXIT_FAILURE;
+    }
+
     current_job_id = argv[1];
-    current_language = argv[2];
+    current_language = valid_language(argv[2]);
 
     current_cpu_core = atof(argv[3]);
     current_memory_mb = atol(argv[4]);
@@ -604,7 +647,7 @@ int main(int argc, char *argv[]){
         return EXIT_FAILURE;
     }
 
-    prepare_test_source(current_job_id);
+    //prepare_test_source(current_job_id);
 
     if(mount_overlayfs(current_job_id, current_language) != 0){
         return EXIT_FAILURE;
