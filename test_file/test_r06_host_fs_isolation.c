@@ -18,9 +18,8 @@ void try_read(const char *path) {
 int main() {
     printf("Host filesystem isolation test\n");
 
-    try_read("/etc/shadow");
+    try_read("/proc/1/root/etc/shadow");
     try_read("/root/.bashrc");
-    try_read("/home/ivanchang/.bashrc");
     try_read("/tmp/sandbox");
 
     printf("Filesystem isolation check finished.\n");
