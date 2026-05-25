@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
-from db import get_connection, init_db
+from .db import get_connection, init_db
 import asyncio
 import json
 from pathlib import Path

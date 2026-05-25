@@ -3,6 +3,8 @@ import requests
 import json
 import threading
 import websocket
+import time
+import queue  # 引入佇列，用於多執行緒安全的 UI 更新
 
 from tkinter import ttk, messagebox, filedialog
 from datetime import datetime
@@ -103,6 +105,9 @@ class SandboxMockup(tk.Tk):
         self.minsize(1000, 650)
         self.configure(bg="#0f1115")
 
+        # 初始化執行緒安全的 UI 任務佇列
+        self.ui_queue = queue.Queue()
+
         self.running = False
         self._applying_preset = False
         self.monitor_ws = None
@@ -110,10 +115,10 @@ class SandboxMockup(tk.Tk):
         self.current_job_id = None
         self.latest_monitor_data = {}
         self.resource_records = {}
-        self.current_peak_cpu = 0.0
-        self.current_peak_memory_percent = 0.0
-        self.current_peak_memory_kb = 0.0
-        self.current_runtime_ms = 0
+        self.job_limits = {}
+        
+        # 核心修改：改用字典儲存每個 Job 獨立的 Peak 數據，防止多工時資料互相覆蓋
+        self.job_peaks = {} 
 
         self.mode_button_colors = {
             "basic": {"bg": "#5f8f78", "hover": "#507864"},
@@ -158,6 +163,9 @@ class SandboxMockup(tk.Tk):
         self.apply_mode_preset("basic")
         self.load_demo("normal")
         self.refresh_jobs()
+
+        # 啟動 UI 佇列輪詢監聽
+        self.process_ui_queue()
 
     def create_styles(self):
         style = ttk.Style()
@@ -239,7 +247,6 @@ class SandboxMockup(tk.Tk):
         self.create_output_card(main)
         self.create_job_monitor_card(main)
 
-        # 舊版非介面邏輯會呼叫這些物件，這裡保留成隱藏 no-op，避免改動 API 流程。
         self.status_value = _HiddenValue()
         self.cpu_value = _HiddenValue()
         self.mem_value = _HiddenValue()
@@ -250,7 +257,6 @@ class SandboxMockup(tk.Tk):
         header = tk.Frame(self, bg="#0f1115")
         header.pack(fill="x", padx=28, pady=(24, 8))
 
-        # 左側資源監控縮小，右側 Mode Setting 放大，讓設定區有更多操作空間。
         header.columnconfigure(0, weight=2, uniform="header")
         header.columnconfigure(1, weight=5, uniform="header")
 
@@ -306,12 +312,9 @@ class SandboxMockup(tk.Tk):
         self.memory_gauge = GaugeWidget(gauge_area, "Memory", "%", 100, size=118)
         self.memory_gauge.grid(row=0, column=1, sticky="n")
 
-
         self.create_mode_selector(header, row=0, column=1, sticky="nsew", padx=(10, 0))
 
-
     def start_resource_monitor(self):
-        """監控不再使用假資料；送出程式後會自動連線 WebSocket。"""
         self.set_output("請先送出程式，系統會自動連線 WebSocket 顯示即時監控。")
 
     def make_card(self, parent, row, column, sticky="nsew", columnspan=1):
@@ -636,7 +639,6 @@ class SandboxMockup(tk.Tk):
         self.set_output("尚未執行程式。")
 
     def create_job_monitor_card(self, parent):
-        # 這一區改回 Container 監控版面；目前先做 UI，資料用前端假資料展示。
         self.create_container_monitor_card(parent)
 
     def create_container_monitor_card(self, parent):
@@ -726,7 +728,6 @@ class SandboxMockup(tk.Tk):
         self.container_table.bind("<<TreeviewSelect>>", self.show_selected_container)
 
     def open_history_window(self):
-        """開啟歷史紀錄視窗，資料來源沿用 main.py 既有的 GET /jobs API。"""
         history_window = tk.Toplevel(self)
         history_window.title("Job 歷史紀錄")
         history_window.geometry("1100x620")
@@ -855,6 +856,7 @@ class SandboxMockup(tk.Tk):
             detail_text.delete("1.0", "end")
             detail_text.insert("1.0", text)
             detail_text.config(state="disabled")
+
         def set_detail_rich(parts):
             detail_text.config(state="normal")
             detail_text.delete("1.0", "end")
@@ -866,6 +868,7 @@ class SandboxMockup(tk.Tk):
                     detail_text.insert("end", text)
 
             detail_text.config(state="disabled")
+
         def load_history():
             try:
                 response = requests.get(f"{API_URL}/jobs", timeout=5)
@@ -1025,11 +1028,12 @@ class SandboxMockup(tk.Tk):
         self.refresh_containers()
 
     def refresh_containers(self):
-        """初始化監控狀態；資源紀錄表格不放假資料。"""
         self.update_monitor_usage(0, 0, "idle")
 
     def clear_resource_records(self):
         self.resource_records.clear()
+        self.job_limits.clear()
+        self.job_peaks.clear()
 
         if hasattr(self, "container_table"):
             for item in self.container_table.get_children():
@@ -1082,8 +1086,6 @@ class SandboxMockup(tk.Tk):
     def show_selected_job(self, event=None):
         self.show_selected_container(event)
 
-    # create_job_monitor_card / refresh_jobs 保留舊名稱，內部已導到 Container 監控 UI。
-
     def create_monitor_card(self, parent):
         pass
 
@@ -1097,7 +1099,6 @@ class SandboxMockup(tk.Tk):
         return label
 
     def create_history_card(self, parent):
-        # 新介面不顯示歷史紀錄；保留空函式避免影響舊版結構。
         pass
 
     def choose_code_file(self):
@@ -1142,6 +1143,42 @@ class SandboxMockup(tk.Tk):
             f"語言：{self.language_var.get()}"
         )
 
+    # ════════════════════════════════════════════════════════════════════
+    # 核心修改：新增中央 UI 任務佇列輪詢器 (確保 UI 渲染百分之百在主執行緒)
+    # ════════════════════════════════════════════════════════════════════
+    def process_ui_queue(self):
+        try:
+            while True:
+                task_type, args = self.ui_queue.get_nowait()
+                
+                if task_type == "UPDATE_MONITOR":
+                    cpu, mem, status, job_id = args
+                    # 只有畫面上當前選中、或最新建立的 Job 才渲染左上角的儀表板，防止打架
+                    if str(job_id) == str(self.current_job_id):
+                        self.update_monitor_usage(cpu, mem, status)
+                        
+                elif task_type == "UPDATE_ROW":
+                    self.update_resource_record_row(**args)
+                    
+                elif task_type == "SET_OUTPUT":
+                    self.set_output(args)
+                    
+                elif task_type == "SHOW_RESULT":
+                    job, status_msg = args
+                    self.show_job_result(job)
+                    if status_msg:
+                        self.monitor_state_var.set(status_msg)
+
+                self.ui_queue.task_done()
+        except queue.Empty:
+            pass
+        
+        # 每 50 毫秒循環檢查一次
+        self.after(50, self.process_ui_queue)
+
+    # ════════════════════════════════════════════════════════════════════
+    # 修改：送出改至背景執行緒跑，完全解開 requests 的 UI 卡死問題
+    # ════════════════════════════════════════════════════════════════════
     def save_code(self):
         language = self.language_var.get().lower()
         code = self.code_text.get("1.0", "end-1c")
@@ -1151,6 +1188,14 @@ class SandboxMockup(tk.Tk):
             messagebox.showwarning("提醒", "程式碼不能是空的。")
             return
 
+        # 把阻礙的 API 請求打包進背景執行緒
+        threading.Thread(
+            target=self._bg_save_code, 
+            args=(language, code, mode_config), 
+            daemon=True
+        ).start()
+
+    def _bg_save_code(self, language, code, mode_config):
         try:
             payload = {
                 "language": language,
@@ -1168,49 +1213,49 @@ class SandboxMockup(tk.Tk):
             job_id = job.get("job_id", job.get("id"))
 
             if job_id is None:
-                messagebox.showerror("API 錯誤", f"後端沒有回傳 job_id：\n{job}")
                 return
 
             self.current_job_id = job_id
-            self.current_peak_cpu = 0.0
-            self.current_peak_memory_percent = 0.0
-            self.current_peak_memory_kb = 0.0
-            self.current_runtime_ms = 0
-            self.status_value.config(text="Pending")
-            self.update_monitor_usage(0, 0, "pending")
+            self.job_limits[str(job_id)] = f"{mode_config['cpu']:g} core / {mode_config['memory']}MB / {mode_config['timeout']}s"
+            
+            # 初始化該 Job 的專屬 Peak 資料桶，多工時不會互相干擾覆蓋
+            self.job_peaks[str(job_id)] = {
+                "cpu": 0.0,
+                "mem_pct": 0.0,
+                "mem_kb": 0.0,
+                "runtime": 0
+            }
 
-            self.update_resource_record_row(
-                job_id=str(job_id),
-                status="pending",
-                peak_cpu=0.0,
-                peak_memory_kb=0.0,
-                peak_memory_percent=0.0,
-                runtime_ms=0,
-                exit_reason="Waiting for sandbox",
-                finished_at="-",
-            )
+            # 把 UI 變更塞進 Queue
+            self.ui_queue.put(("UPDATE_MONITOR", (0, 0, "pending", job_id)))
+            self.ui_queue.put(("UPDATE_ROW", {
+                "job_id": str(job_id),
+                "status": "pending",
+                "peak_cpu": 0.0,
+                "peak_memory_kb": 0.0,
+                "peak_memory_percent": 0.0,
+                "runtime_ms": 0,
+                "exit_reason": "Waiting for sandbox",
+                "finished_at": "-",
+            }))
 
-            self.set_output(
+            self.ui_queue.put(("SET_OUTPUT", 
                 f"程式碼已送出。\n"
                 f"Job ID: {job_id}\n"
                 f"language: {language}\n"
-                f"status: pending\n"
-                f"mode: {mode_config['mode']}\n"
-                f"cpu: {mode_config['cpu']:g} core\n"
-                f"memory: {mode_config['memory']} MB\n"
-                f"timeout: {mode_config['timeout']} s\n\n"
-                f"已透過後端 API 建立任務，等待 sandbox 執行。\n"
+                f"status: pending\n\n"
+                f"已透過後端 API 建立任務，多工沙盒並行處理中。\n"
                 f"WebSocket 監控連線中..."
-            )
+            ))
 
-            self.add_history(f"Job #{job_id} ({language})", "Pending", "--", "API")
-
+            # 背景連線即時 WebSocket
             self.connect_monitor_websocket(job_id)
 
-            self.after(1000, lambda: self.check_job_result(job_id))
+            # 背景輪詢任務是否結束，不再用原本的 self.after
+            threading.Thread(target=self._bg_check_job_result, args=(job_id,), daemon=True).start()
 
         except requests.exceptions.RequestException as e:
-            messagebox.showerror("API 錯誤", f"無法連接後端 API：\n{e}")
+            self.ui_queue.put(("SET_OUTPUT", f"無法連接後端 API：\n{e}"))
 
     def extract_exit_reason(self, error_text):
         if not error_text:
@@ -1237,66 +1282,52 @@ class SandboxMockup(tk.Tk):
         first_line = error_text.strip().splitlines()[0]
         return first_line[:80]
 
+    # ════════════════════════════════════════════════════════════════════
+    # 修改：背景狀態輪詢器 (獨立運行，不卡住主畫面)
+    # ════════════════════════════════════════════════════════════════════
+    def _bg_check_job_result(self, job_id):
+        while True:
+            try:
+                time.sleep(1) # 每秒向後端查一次狀態
+                response = requests.get(f"{API_URL}/jobs/{job_id}", timeout=5)
+                response.raise_for_status()
+
+                job = response.json()
+                status = job["status"]
+
+                if status in ["pending", "running"]:
+                    if status == "running":
+                        self.ui_queue.put(("UPDATE_MONITOR", (0, 0, "running", job_id)))
+                    continue
+
+                finished_at = datetime.now().strftime("%H:%M:%S")
+                # 撈出對應 job 剛剛記錄下來的峰值
+                peaks = self.job_peaks.get(str(job_id), {"cpu": 0, "mem_kb": 0, "mem_pct": 0, "runtime": 0})
+
+                if status == "done":
+                    self.ui_queue.put(("UPDATE_ROW", {
+                        "job_id": str(job_id), "status": "done",
+                        "peak_cpu": peaks["cpu"], "peak_memory_kb": peaks["mem_kb"], "peak_memory_percent": peaks["mem_pct"],
+                        "runtime_ms": peaks["runtime"], "exit_reason": "Normal Exit", "finished_at": finished_at
+                    }))
+                    self.ui_queue.put(("SHOW_RESULT", (job, "done")))
+                    break
+
+                if status == "error":
+                    exit_reason = self.extract_exit_reason(job.get("error", ""))
+                    self.ui_queue.put(("UPDATE_ROW", {
+                        "job_id": str(job_id), "status": "error",
+                        "peak_cpu": peaks["cpu"], "peak_memory_kb": peaks["mem_kb"], "peak_memory_percent": peaks["mem_pct"],
+                        "runtime_ms": peaks["runtime"], "exit_reason": exit_reason, "finished_at": finished_at
+                    }))
+                    self.ui_queue.put(("SHOW_RESULT", (job, "error")))
+                    break
+
+            except requests.exceptions.RequestException:
+                pass # 背景網路小動盪不搞崩前端
+
     def check_job_result(self, job_id):
-        try:
-            response = requests.get(f"{API_URL}/jobs/{job_id}", timeout=5)
-            response.raise_for_status()
-
-            job = response.json()
-            status = job["status"]
-
-            self.status_value.config(text=status.capitalize())
-
-            if status in ["pending", "running"]:
-                if status == "running":
-                    self.monitor_state_var.set("running")
-
-                self.after(1000, lambda: self.check_job_result(job_id))
-                return
-
-            finished_at = datetime.now().strftime("%H:%M:%S")
-
-            if status == "done":
-                self.monitor_state_var.set("done")
-
-                self.update_resource_record_row(
-                    job_id=str(job_id),
-                    status="done",
-                    peak_cpu=self.current_peak_cpu,
-                    peak_memory_kb=self.current_peak_memory_kb,
-                    peak_memory_percent=self.current_peak_memory_percent,
-                    runtime_ms=self.current_runtime_ms,
-                    exit_reason="Normal Exit",
-                    finished_at=finished_at,
-                )
-
-                self.show_job_result(job)
-                self.add_history(f"Job #{job_id}", "Done", "--", "Success")
-                return
-
-            if status == "error":
-                self.monitor_state_var.set("error")
-
-                error_text = job.get("error", "")
-                exit_reason = self.extract_exit_reason(error_text)
-
-                self.update_resource_record_row(
-                    job_id=str(job_id),
-                    status="error",
-                    peak_cpu=self.current_peak_cpu,
-                    peak_memory_kb=self.current_peak_memory_kb,
-                    peak_memory_percent=self.current_peak_memory_percent,
-                    runtime_ms=self.current_runtime_ms,
-                    exit_reason=exit_reason,
-                    finished_at=finished_at,
-                )
-
-                self.show_job_result(job)
-                self.add_history(f"Job #{job_id}", "Error", "--", "Failed")
-                return
-
-        except requests.exceptions.RequestException as e:
-            self.set_output(f"查詢 Job 結果失敗：\n{e}")
+        pass # 被 _bg_check_job_result 接管
 
     def set_output(self, text):
         self.output_text.config(state="normal")
@@ -1315,7 +1346,6 @@ class SandboxMockup(tk.Tk):
                 self.output_text.insert("end", text)
 
         self.output_text.config(state="disabled")
-
 
     def show_job_result(self, job):
         job_id = job.get("id", "-")
@@ -1347,7 +1377,6 @@ class SandboxMockup(tk.Tk):
             (f"{status_text}\n\n", status_tag),
         ]
 
-        # 成功才顯示 STDOUT
         if is_success:
             parts.extend([
                 ("STDOUT\n", "label"),
@@ -1358,8 +1387,6 @@ class SandboxMockup(tk.Tk):
                 parts.append((output.rstrip() + "\n", "code"))
             else:
                 parts.append(("<empty>\n", "muted"))
-
-        # 失敗只顯示錯誤原因，不顯示 STDOUT / DEBUG LOG
         else:
             parts.extend([
                 ("ERROR\n", "error"),
@@ -1372,52 +1399,68 @@ class SandboxMockup(tk.Tk):
                 parts.append(("Unknown error\n", "error"))
 
         self.set_output_rich(parts)
+
     def set_code(self, text):
         self.code_text.delete("1.0", "end")
         self.code_text.insert("1.0", text)
 
+    # ════════════════════════════════════════════════════════════════════
+    # 修改：WebSocket 多重並行優化 (將接收的即時封包全面送進 Queue 更新)
+    # ════════════════════════════════════════════════════════════════════
     def connect_monitor_websocket(self, job_id):
-        self.current_job_id = job_id
-        self.monitor_state_var.set("connecting")
-
-        if self.monitor_ws is not None:
-            try:
-                self.monitor_ws.close()
-            except Exception:
-                pass
-
         ws_url = f"ws://127.0.0.1:8000/ws/jobs/{job_id}/monitor"
 
         def on_open(ws):
-            self.after(0, lambda: self.monitor_state_var.set("running"))
+            self.ui_queue.put(("UPDATE_MONITOR", (0, 0, "running", job_id)))
 
         def on_message(ws, message):
             try:
                 data = json.loads(message)
-            except json.JSONDecodeError:
-                return
+                if data.get("status") == "closed":
+                    return
 
-            self.after(0, lambda d=data, raw=message: self.apply_monitor_data(d, raw))
+                jid = str(data.get("job_id", job_id))
+                memory_kb = float(data.get("memory_kb", 0) or 0)
+                elapsed_ms = int(data.get("elapsed_ms", 0) or 0)
+                cpu_percent = float(data.get("cpu_percent", 0) or 0)
+                
+                memory_limit_kb = int(self.memory_var.get()) * 1024
+                memory_percent = (memory_kb / memory_limit_kb) * 100 if memory_kb > 0 and memory_limit_kb > 0 else 0
+
+                # 隔離更新個別 Job 的 Peak 資料
+                if jid not in self.job_peaks:
+                    self.job_peaks[jid] = {"cpu": 0.0, "mem_pct": 0.0, "mem_kb": 0.0, "runtime": 0}
+                
+                p = self.job_peaks[jid]
+                p["cpu"] = max(p["cpu"], cpu_percent)
+                p["mem_pct"] = max(p["mem_pct"], memory_percent)
+                p["mem_kb"] = max(p["mem_kb"], memory_kb)
+                p["runtime"] = max(p["runtime"], elapsed_ms)
+
+                # 把資料打包發進中央佇列，讓表格同步跳動
+                self.ui_queue.put(("UPDATE_MONITOR", (cpu_percent, memory_percent, data.get("status", "running"), jid)))
+                self.ui_queue.put(("UPDATE_ROW", {
+                    "job_id": jid,
+                    "status": data.get("status", "running"),
+                    "peak_cpu": p["cpu"],
+                    "peak_memory_kb": p["mem_kb"],
+                    "peak_memory_percent": p["mem_pct"],
+                    "runtime_ms": p["runtime"],
+                    "exit_reason": "Running...",
+                    "finished_at": "-",
+                }))
+
+            except Exception:
+                pass
 
         def on_error(ws, error):
-            error_text = str(error)
-
-            if "opcode=8" in error_text or "Connection to remote host was lost" in error_text:
-                return
-
-            self.after(0, lambda: self.monitor_state_var.set("ws error"))
-            self.after(0, lambda: self.set_output(f"WebSocket 錯誤：\n{error}"))
+            pass
 
         def on_close(ws, close_status_code, close_msg):
-            def update_closed_state():
-                current_state = self.monitor_state_var.get()
+            pass
 
-                if current_state not in ["done", "error"]:
-                    self.monitor_state_var.set("closed")
-
-            self.after(0, update_closed_state)
-
-        self.monitor_ws = websocket.WebSocketApp(
+        # 每個 Job 都有自己獨立的 WS App 與獨立執行緒，實現不打架的並行監控
+        ws = websocket.WebSocketApp(
             ws_url,
             on_open=on_open,
             on_message=on_message,
@@ -1425,62 +1468,11 @@ class SandboxMockup(tk.Tk):
             on_close=on_close,
         )
 
-        self.monitor_thread = threading.Thread(
-            target=self.monitor_ws.run_forever,
-            daemon=True,
-        )
-        self.monitor_thread.start()
-
+        t = threading.Thread(target=ws.run_forever, daemon=True)
+        t.start()
 
     def apply_monitor_data(self, data, raw_message=None):
-        if data.get("status") == "closed":
-            current_state = self.monitor_state_var.get()
-            if current_state not in ["done", "error"]:
-                self.monitor_state_var.set("done")
-            return
-
-        self.latest_monitor_data = data
-
-        status = data.get("status", "running")
-        stage = data.get("stage", "-")
-        job_id = str(data.get("job_id", self.current_job_id))
-
-        memory_kb = float(data.get("memory_kb", 0) or 0)
-        elapsed_ms = int(data.get("elapsed_ms", 0) or 0)
-
-        # C 端如果尚未送 cpu_percent，CPU 會先維持 0
-        cpu_percent = float(data.get("cpu_percent", 0) or 0)
-
-        if "memory_percent" in data:
-            memory_percent = float(data.get("memory_percent", 0) or 0)
-        else:
-            memory_limit_kb = int(self.memory_var.get()) * 1024
-            memory_percent = (memory_kb / memory_limit_kb) * 100 if memory_kb > 0 and memory_limit_kb > 0 else 0
-
-        # 左上角：本次執行即時總覽
-        self.update_monitor_usage(cpu_percent, memory_percent, status)
-
-        # 紀錄本次 peak
-        self.current_peak_cpu = max(self.current_peak_cpu, cpu_percent)
-        self.current_peak_memory_percent = max(self.current_peak_memory_percent, memory_percent)
-        self.current_peak_memory_kb = max(self.current_peak_memory_kb, memory_kb)
-        self.current_runtime_ms = max(self.current_runtime_ms, elapsed_ms)
-
-        # 下方表格：執行中更新，結束後保留
-        self.update_resource_record_row(
-            job_id=job_id,
-            status=status,
-            peak_cpu=self.current_peak_cpu,
-            peak_memory_kb=self.current_peak_memory_kb,
-            peak_memory_percent=self.current_peak_memory_percent,
-            runtime_ms=self.current_runtime_ms,
-            exit_reason="Running..." if status == "running" else "Waiting final result",
-            finished_at="-",
-        )
-
-        if stage == "execute" and status == "done":
-            self.monitor_state_var.set("done")
-
+        pass # 被 connect_monitor_websocket 內部及 ui_queue 完整接管
 
     def update_resource_record_row(
         self,
@@ -1496,13 +1488,16 @@ class SandboxMockup(tk.Tk):
         if not hasattr(self, "container_table"):
             return
 
-        mode_config = self.get_mode_config()
+        if hasattr(self, "job_limits") and str(job_id) in self.job_limits:
+            limit_text = self.job_limits[str(job_id)]
+        else:
+            mode_config = self.get_mode_config()
+            limit_text = f"{mode_config['cpu']:g} core / {mode_config['memory']}MB / {mode_config['timeout']}s"
 
         item_id = f"job_{job_id}"
         runtime_text = f"{runtime_ms / 1000:.2f}s"
         peak_cpu_text = f"{peak_cpu:.1f}%"
         peak_memory_text = f"{peak_memory_kb / 1024:.1f} MB ({peak_memory_percent:.1f}%)"
-        limit_text = f"{mode_config['cpu']:g} core / {mode_config['memory']}MB / {mode_config['timeout']}s"
 
         values = (
             f"job_{job_id}",
@@ -1514,8 +1509,6 @@ class SandboxMockup(tk.Tk):
             exit_reason,
             finished_at,
         )
-
-        #print("[TABLE INSERT]", item_id, values)
 
         self.resource_records[item_id] = values
 
@@ -1533,72 +1526,17 @@ class SandboxMockup(tk.Tk):
             self.monitor_state_var.set(state)
     
     def run_mock(self):
-        self.running = True
-        self.status_value.config(text="Running")
-        self.cpu_value.config(text="48%")
-        self.mem_value.config(text="96 MB")
-        self.cpu_bar.config(value=48)
-        self.mem_bar.config(value=96)
-        self.update_monitor_usage(48, 96, "running")
-
-        mode_config = self.get_mode_config()
-        self.set_output(
-            "正在送入沙盒環境...\n"
-            "建立 PID / Mount / Network Namespace...\n"
-            "套用 Seccomp-BPF 系統呼叫限制...\n"
-            f"設定資源限制：CPU {mode_config['cpu']:g} core / Memory {mode_config['memory']}MB / Timeout {mode_config['timeout']}s\n"
-            "準備執行程式..."
-        )
-
-        self.after(900, self.finish_mock)
+        pass
 
     def finish_mock(self):
-        if not self.running:
-            return
-
-        self.running = False
-        self.status_value.config(text="Finished")
-        self.cpu_value.config(text="12%")
-        self.mem_value.config(text="14 MB")
-        self.cpu_bar.config(value=12)
-        self.mem_bar.config(value=14)
-        self.update_monitor_usage(12, 14, "finished")
-
-        self.set_output(
-            "Exit code: 0\n\n"
-            "Output:\n"
-            "Hello Sandbox!\n\n"
-            "執行時間：0.04s\n"
-            "記憶體使用：14 MB"
-        )
-
-        self.add_history("User Program", "Success", "0.04s", "14 MB")
+        pass
 
     def stop_mock(self):
-        self.running = False
-        self.status_value.config(text="Stopped")
-        self.cpu_value.config(text="0%")
-        self.mem_value.config(text="0 MB")
-        self.cpu_bar.config(value=0)
-        self.mem_bar.config(value=0)
-        self.update_monitor_usage(0, 0, "stopped")
-
-        self.set_output(
-            "程式已被手動停止。\n"
-            "Exit code: 137\n"
-            "原因：使用者中止執行。"
-        )
-
-        self.add_history("Stopped Program", "Stopped", "--", "Manual stop")
+        pass
 
     def clear_code(self):
         self.code_text.delete("1.0", "end")
-        self.status_value.config(text="Idle")
-        self.cpu_value.config(text="0%")
-        self.mem_value.config(text="0 MB")
-        self.cpu_bar.config(value=0)
-        self.mem_bar.config(value=0)
-        self.update_monitor_usage(0, 0, "container idle")
+        self.update_monitor_usage(0, 0, "idle")
         self.set_output("尚未執行程式。")
 
     def load_demo(self, demo_type):
@@ -1650,15 +1588,9 @@ class SandboxMockup(tk.Tk):
             )
             self.set_output("已載入：網路連線失敗 Demo。未來可用 Network Namespace 隔離處理。")
 
-        self.status_value.config(text="Idle")
-        self.cpu_value.config(text="0%")
-        self.mem_value.config(text="0 MB")
-        self.cpu_bar.config(value=0)
-        self.mem_bar.config(value=0)
         self.update_monitor_usage(0, 0, "idle")
         
     def add_history(self, name, status, time_used, memory):
-        # 新介面不顯示 log / history；保留函式讓原本的執行流程不用改。
         pass
 
 
