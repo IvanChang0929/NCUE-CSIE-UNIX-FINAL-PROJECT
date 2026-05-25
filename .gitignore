@@ -13,6 +13,10 @@ sandbox/result
 
 alpine-minirootfs-3.19.1-x86_64.tar.gz
 
+worker_*.log
+
+rebuild.log
+
 __pycache__/
 *.pyc
 
