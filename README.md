@@ -6,36 +6,215 @@
 
 ## 目錄
 
-1. [系統架構總覽](#系統架構總覽)
-2. [Sandbox 模組](#sandbox-模組)
+1. [使用手冊 / 啟動流程](#使用手冊--啟動流程)
+2. [系統架構總覽](#系統架構總覽)
+   - [主要檔案結構](#主要檔案結構)
+3. [Sandbox 模組](#sandbox-模組)
    - [Rootfs / Image 建構腳本使用說明](#1-rootfs--image-建構腳本使用說明)
    - [Sandbox 防禦機制說明](#2-sandbox-防禦機制說明)
-   - [編譯與啟動 Sandbox](#3-編譯與啟動-sandbox)
    - [Sandbox 執行流程摘要](#4-sandbox-執行流程摘要)
-   - [Sandbox 注意事項](#5-sandbox-注意事項)
-3. [後端資料庫 API 與資源監控模組](#後端資料庫-api-與資源監控模組)
-   - [模組簡介](#1-模組簡介)
-   - [主要檔案結構](#2-主要檔案結構)
-   - [資料庫設計](#3-資料庫設計)
-   - [後端 API 說明](#4-後端-api-說明)
-   - [Worker 執行流程](#5-worker-執行流程)
-   - [Mode Setting 與資源限制傳遞](#6-mode-setting-與資源限制傳遞)
-   - [即時資源監控設計](#7-即時資源監控設計)
-   - [monitor.log 格式](#8-monitorlog-格式)
-   - [WebSocket 即時監控 API](#9-websocket-即時監控-api)
-   - [前端資源紀錄保存方式](#10-前端資源紀錄保存方式)
-   - [執行結果分類](#11-執行結果分類)
-   - [相依套件](#12-相依套件)
-4. [前端 UI 使用說明](#前端-ui-使用說明)
-   - [啟動後端 API](#1-啟動後端-api)
+4. [後端資料庫 API 與資源監控模組](#後端資料庫-api-與資源監控模組)
+   - [資料庫設計](#2-資料庫設計)
+   - [後端 API 說明](#3-後端-api-說明)
+   - [Worker 執行流程](#4-worker-執行流程)
+   - [WebSocket 即時監控 API](#8-websocket-即時監控-api)
+5. [前端 UI 使用說明](#前端-ui-使用說明)
    - [安裝前端需要的套件](#2-安裝前端需要的套件)
    - [啟動前端 UI](#3-啟動前端-ui)
-   - [使用程式碼輸入區](#4-使用程式碼輸入區)
-   - [設定 Sandbox 執行模式](#5-設定-sandbox-執行模式)
-   - [送出程式到沙盒執行](#6-送出程式到沙盒執行)
-   - [即時資源監控](#7-即時資源監控)
    - [查看 Job 歷史紀錄](#8-查看-job-歷史紀錄)
-   - [前端注意事項](#9-前端注意事項)
+
+---
+
+# 使用手冊 / 啟動流程
+
+## 1. 安裝必要套件
+
+在 Ubuntu / WSL 環境下，可以先安裝 Sandbox 編譯與建構需要的套件：
+
+```bash
+sudo apt update
+sudo apt install -y build-essential make libseccomp-dev wget rsync
+```
+
+如果系統缺少其他開發套件，再依編譯錯誤補上。
+
+後端需要 FastAPI、Uvicorn 與 WebSocket 支援。建議在 `backend` 目錄建立虛擬環境後安裝：
+
+```bash
+cd backend
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+在專案根目錄或前端目錄下安裝前端需要的 Python 套件：
+
+```bash
+pip install requests websocket-client
+```
+
+`tkinter` 通常已隨 Python 內建，若執行時出現 tkinter 相關錯誤，請確認目前 Python 環境是否支援 Tk GUI。
+
+---
+
+## 2. 建立 rootfs / image
+
+第一次執行前，請先建立 sandbox image：
+
+```bash
+chmod +x scripts/*.sh
+sudo bash scripts/build_all.sh
+```
+
+確認以下目錄存在：
+
+```bash
+ls sandbox/image
+```
+
+應可看到：
+
+```bash
+base_rootfs  gcc  python
+```
+
+---
+
+## 3. 編譯 Sandbox
+
+若 Makefile 位在專案根目錄：
+
+```bash
+make
+```
+
+編譯完成後，sandbox binary 預期位於類似位置：
+
+```bash
+./sandbox/build/sandbox
+```
+
+---
+
+## 4. 啟動後端 API
+
+`ui.py` 會透過 FastAPI 後端建立 Job、查詢歷史紀錄，並使用 WebSocket 接收沙盒資源監控資料。
+
+請先確認後端服務已啟動，預設連線位置為：
+
+```bash
+http://127.0.0.1:8000
+```
+
+啟動方式如下：
+
+```bash
+cd backend
+source venv/bin/activate
+uvicorn main:app --reload
+```
+
+若後端尚未啟動，前端仍可開啟，但送出程式、歷史紀錄與即時監控功能會無法連線。
+
+---
+
+## 5. 啟動 Worker
+
+Worker 負責輪詢後端 pending Job、呼叫底層 Sandbox，並將結果回寫後端。請另外開一個終端機，在專案根目錄執行：
+
+```bash
+python3 sandbox/worker.py
+```
+
+若呼叫 Sandbox binary 時需要權限，請依照專案實際 sudo 設定執行。
+
+---
+
+## 6. 啟動前端 UI
+
+進入 `frontend` 目錄後執行：
+
+```bash
+cd frontend
+python3 ui.py
+```
+
+若你是在專案根目錄執行，可使用：
+
+```bash
+python3 frontend/ui.py
+```
+
+---
+
+## 7. 使用程式碼輸入區
+
+前端支援直接輸入程式碼，也可以按下「載入程式碼」選取本機檔案。本機檔案位置不影響使用。
+
+目前可選語言：
+
+```text
+C
+Python
+```
+
+---
+
+## 8. 設定 Sandbox 執行模式
+
+送出前可在 Mode Setting 區塊選擇資源限制模式：
+
+```text
+Basic Mode  : CPU 1 core、Memory 256MB、Timeout 10s
+Strict Mode : CPU 0.5 core、Memory 128MB、Timeout 5s
+Dev Mode    : CPU 2 cores、Memory 512MB、Timeout 30s
+Custom Mode : 自訂 CPU、Memory、Timeout
+```
+
+---
+
+## 9. 送出程式到沙盒執行
+
+按下「送出執行」後，前端會將程式碼與限制設定送到後端：
+
+```http
+POST /jobs
+```
+
+送出成功後會顯示 Job ID，並開始等待 Worker 與 Sandbox 執行結果。
+
+---
+
+## 10. 即時資源監控
+
+畫面左上角會顯示本次執行的 CPU / Memory 儀表板。
+
+下方 Container 資源紀錄會保留每個 Job 的摘要，包含：
+
+```text
+Peak CPU
+Peak Memory
+Runtime
+Limit
+Exit Reason
+```
+
+---
+
+## 11. 查看 Job 歷史紀錄
+
+按下輸出區右上角「歷史紀錄」可開啟 Job 歷史視窗。
+
+可查看該筆 Job 的完整內容。
+
+---
+
+## 12. 注意事項
+
+1. 使用前請先啟動後端 FastAPI 與 Worker。
+2. Sandbox image 尚未建立時，請先執行 `sudo bash scripts/build_all.sh`。
+3. 每個 Job 的 runtime 目錄會建立在 `/tmp/sandbox/job_<job_id>`，正常結束後會自動清理。
+
 
 ---
 
@@ -69,6 +248,26 @@ Frontend 即時資源監控與歷史紀錄
 6. Sandbox 輸出 `result.json`、`output.txt`、`monitor.log`。
 7. Worker 將結果回寫後端。
 8. 前端透過 API 查詢結果，並透過 WebSocket 接收即時資源監控資料。
+
+---
+
+## 主要檔案結構
+```text
+backend/
+├── main.py              # FastAPI 後端 API 與 WebSocket
+├── db.py                # SQLite 資料庫初始化與連線
+├── requirements.txt     # 後端與 WebSocket 相關套件
+
+sandbox/
+├── api_client.py        # Worker 與後端 API 溝通
+├── worker.py            # 取得 Job、呼叫 Sandbox、回傳結果
+├── result/job_<id>/
+│   ├── result.json      # Sandbox 執行結果
+│   └── monitor.log      # 即時資源監控資料
+
+frontend/
+├── ui.py                # Tkinter GUI 前端介面
+```
 
 ---
 
@@ -561,28 +760,7 @@ Worker 會從後端取得待執行 Job，呼叫底層 Sandbox 執行程式，最
 
 ---
 
-## 2. 主要檔案結構
-
-```text
-backend/
-├── main.py              # FastAPI 後端 API 與 WebSocket
-├── db.py                # SQLite 資料庫初始化與連線
-├── requirements.txt     # 後端與 WebSocket 相關套件
-
-sandbox/
-├── api_client.py        # Worker 與後端 API 溝通
-├── worker.py            # 取得 Job、呼叫 Sandbox、回傳結果
-├── result/job_<id>/
-│   ├── result.json      # Sandbox 執行結果
-│   └── monitor.log      # 即時資源監控資料
-
-frontend/
-├── ui.py                # Tkinter GUI 前端介面
-```
-
----
-
-## 3. 資料庫設計
+## 2. 資料庫設計
 
 後端使用 SQLite 作為資料庫，主要資料表為：
 
@@ -618,9 +796,9 @@ pending  →  running  →  done
 
 ---
 
-## 4. 後端 API 說明
+## 3. 後端 API 說明
 
-### 4.1 建立 Job
+### 3.1 建立 Job
 
 ```http
 POST /jobs
@@ -653,7 +831,7 @@ POST /jobs
 
 ---
 
-### 4.2 查詢所有 Job
+### 3.2 查詢所有 Job
 
 ```http
 GET /jobs
@@ -663,7 +841,7 @@ GET /jobs
 
 ---
 
-### 4.3 查詢等待執行的 Job
+### 3.3 查詢等待執行的 Job
 
 ```http
 GET /jobs/pending
@@ -673,7 +851,7 @@ Worker 會定期呼叫此 API，取得目前狀態為 `pending` 的 Job。
 
 ---
 
-### 4.4 查詢單一 Job
+### 3.4 查詢單一 Job
 
 ```http
 GET /jobs/{job_id}
@@ -683,7 +861,7 @@ GET /jobs/{job_id}
 
 ---
 
-### 4.5 更新 Job 狀態與結果
+### 3.5 更新 Job 狀態與結果
 
 ```http
 PATCH /jobs/{job_id}
@@ -713,7 +891,7 @@ Worker 執行完 Sandbox 後，會透過此 API 將結果寫回後端。
 
 ---
 
-## 5. Worker 執行流程
+## 4. Worker 執行流程
 
 Worker 負責連接後端 API 與底層 Sandbox。
 
@@ -735,26 +913,9 @@ Worker 呼叫 Sandbox 的格式：
 ```bash
 sudo ./sandbox/build/sandbox <job_id> <language> <cpu_core> <memory_mb> <timeout_sec>
 ```
-
-範例：
-
-```bash
-sudo ./sandbox/build/sandbox 12 c 1.0 256 10
-```
-
-代表：
-
-```text
-Job ID：12
-語言：C
-CPU 限制：1 core
-Memory 限制：256 MB
-Timeout：10 秒
-```
-
 ---
 
-## 6. Mode Setting 與資源限制傳遞
+## 5. Mode Setting 與資源限制傳遞
 
 前端提供不同執行模式：
 
@@ -785,7 +946,7 @@ cgroup / rlimit 實際套用限制
 
 ---
 
-## 7. 即時資源監控設計
+## 6. 即時資源監控設計
 
 Sandbox parent process 執行期間會定期讀取 cgroup 資訊：
 
@@ -802,7 +963,7 @@ sandbox/result/job_<job_id>/monitor.log
 
 ---
 
-## 8. monitor.log 格式
+## 7. monitor.log 格式
 
 ### monitor.log 範例
 
@@ -823,7 +984,7 @@ status        running / done
 
 ---
 
-## 9. WebSocket 即時監控 API
+## 8. WebSocket 即時監控 API
 
 後端提供 WebSocket 讓前端即時接收資源資料。
 
@@ -859,7 +1020,7 @@ Job done 後關閉 WebSocket
 
 ---
 
-## 10. 前端資源紀錄保存方式
+## 9. 前端資源紀錄保存方式
 
 前端收到 WebSocket 資料後，會即時計算並保存：
 
@@ -891,7 +1052,7 @@ apply_monitor_data()
 
 ---
 
-## 11. 執行結果分類
+## 10. 執行結果分類
 
 系統可根據 Sandbox 回傳結果分類不同狀態：
 
@@ -911,50 +1072,7 @@ FD Limit Works
 
 ---
 
-## 12. 相依套件
-
-後端需要 FastAPI、Uvicorn 與 WebSocket 支援。
-
-`backend/requirements.txt` 中應包含：
-
-```text
-fastapi
-uvicorn[standard]
-pydantic
-requests
-websocket-client
-```
-
-其中：
-
-```text
-uvicorn[standard]
-```
-
-用於支援 FastAPI WebSocket，避免出現：
-
-```text
-No supported WebSocket library detected
-```
-
-而：
-
-```text
-websocket-client
-```
-
-用於 Tkinter 前端連接後端 WebSocket。
-
-安裝套件：
-
-```bash
-cd backend
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
 ---
-
 # 前端 UI 使用說明
 
 ## 1. 啟動後端 API
@@ -1059,9 +1177,3 @@ Exit Reason
 按下輸出區右上角「歷史紀錄」可開啟 Job 歷史視窗。
 
 可查看該筆 Job 的完整內容。
-
----
-
-## 9. 前端注意事項
-
-1. 使用前請先啟動後端 FastAPI 與 Worker。
